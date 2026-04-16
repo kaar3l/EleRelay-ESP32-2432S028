@@ -405,7 +405,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 {
     /* ── Header bar (y 0..23, dark blue BG) ─────────────────────────── */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 0, "EleRelay", C_WHITE, C_NAVY, 1);
+    draw_str(4, 8, "EleRelay", C_WHITE, C_NAVY, 1);
 
     if (now > 0) {
         struct tm lt;
