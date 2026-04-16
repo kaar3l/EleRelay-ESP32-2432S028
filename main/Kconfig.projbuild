@@ -1,0 +1,42 @@
+menu "Elering Smart Relay"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            Name of the WiFi network to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            Password for the WiFi network.
+
+    config RELAY_GPIO
+        int "Relay GPIO pin number"
+        default 10
+        help
+            GPIO pin connected to the relay IN pin (default: GPIO10 on ESP32-C3).
+
+    config RELAY_ACTIVE_LOW
+        bool "Relay activates on LOW (most relay modules)"
+        default y
+        help
+            Enable if your relay module activates when GPIO is LOW.
+            Disable if relay activates on HIGH.
+
+    config HOURS_WINDOW
+        int "Hours window to consider"
+        default 12
+        range 2 24
+        help
+            Number of upcoming hours to analyse for cheap/expensive selection.
+
+    config CHEAP_HOURS
+        int "Number of cheap hours to activate relay"
+        default 6
+        range 1 23
+        help
+            How many of the cheapest hours in the window the relay should be ON.
+
+endmenu
