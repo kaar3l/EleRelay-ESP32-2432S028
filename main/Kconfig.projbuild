@@ -14,7 +14,7 @@ menu "Elering Smart Relay"
 
     config RELAY_GPIO
         int "Relay GPIO pin number"
-        default 10
+        default 22
         help
             GPIO pin connected to the relay IN pin (default: GPIO10 on ESP32-C3).
 

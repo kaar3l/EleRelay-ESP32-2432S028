@@ -20,7 +20,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 | Board | ESP-2432S028 (ESP32-D0WD-V3, 4 MB flash) |
 | Display | ILI9341 2.8″ 320×240 TFT (SPI, on-board) |
 | Relay | Any 5 V relay module with active-LOW or active-HIGH IN |
-| Default relay GPIO | GPIO 10 (configurable via `idf.py menuconfig`) |
+| Default relay GPIO | GPIO 22 (configurable via `idf.py menuconfig`) |
 
 ### Wiring the relay
 
@@ -148,7 +148,7 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 |--------|---------|
 | WiFi SSID | `myssid` |
 | WiFi Password | `mypassword` |
-| Relay GPIO | 10 |
+| Relay GPIO | 22 |
 | Relay active LOW | yes |
 | Hours window | 12 |
 | Cheap hours | 6 |
