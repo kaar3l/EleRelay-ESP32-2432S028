@@ -46,6 +46,13 @@ static const char *TAG = "elerelay";
 #define RELAY_ON_LEVEL   (CONFIG_RELAY_ACTIVE_LOW ? 0 : 1)
 #define RELAY_OFF_LEVEL  (CONFIG_RELAY_ACTIVE_LOW ? 1 : 0)
 
+/* On-board RGB LED — active LOW */
+#define LED_RED_GPIO    4
+#define LED_GREEN_GPIO  16
+#define LED_BLUE_GPIO   17
+#define LED_ON  0
+#define LED_OFF 1
+
 #define MAX_SLOTS        112         /* 24 h × 4 slots/h + spare             */
 #define HTTP_BUF_SIZE    (24 * 1024)
 #define WIFI_MAX_RETRY   10
@@ -526,6 +533,12 @@ static void update_relay(void)
     xSemaphoreGive(s_mutex);
 
     gpio_set_level(RELAY_GPIO, on ? RELAY_ON_LEVEL : RELAY_OFF_LEVEL);
+
+    /* RGB LED: green = cheap, red = expensive, blue always off */
+    gpio_set_level(LED_GREEN_GPIO, is_cheap ? LED_ON : LED_OFF);
+    gpio_set_level(LED_RED_GPIO,   is_cheap ? LED_OFF : LED_ON);
+    gpio_set_level(LED_BLUE_GPIO,  LED_OFF);
+
     ESP_LOGI(TAG, "Relay → %s (hour %s, inv=%d)",
              on ? "ON" : "OFF", is_cheap ? "cheap" : "expensive", s_relay_inv);
 
@@ -1168,16 +1181,22 @@ void app_main(void)
 
     s_mutex = xSemaphoreCreateMutex();
 
-    /* Relay GPIO — initialise OFF */
+    /* Relay + RGB LED GPIOs — initialise OFF */
     gpio_config_t io = {
-        .pin_bit_mask = 1ULL << RELAY_GPIO,
+        .pin_bit_mask = (1ULL << RELAY_GPIO)
+                      | (1ULL << LED_RED_GPIO)
+                      | (1ULL << LED_GREEN_GPIO)
+                      | (1ULL << LED_BLUE_GPIO),
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&io));
-    gpio_set_level(RELAY_GPIO, RELAY_OFF_LEVEL);
+    gpio_set_level(RELAY_GPIO,    RELAY_OFF_LEVEL);
+    gpio_set_level(LED_RED_GPIO,  LED_OFF);
+    gpio_set_level(LED_GREEN_GPIO, LED_OFF);
+    gpio_set_level(LED_BLUE_GPIO, LED_OFF);
 
     /* WiFi common init */
     s_wifi_eg = xEventGroupCreate();
