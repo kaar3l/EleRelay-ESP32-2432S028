@@ -14,4 +14,5 @@ idf_component_register(
         esp-tls
         esp_lcd
         mqtt
+        app_update
 )

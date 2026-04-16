@@ -36,6 +36,8 @@
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
+#include "esp_ota_ops.h"
+#include "esp_app_format.h"
 #include "display.h"
 
 static const char *TAG = "elerelay";
@@ -595,6 +597,8 @@ static const char *PAGE_CSS =
             "color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer}"
     "button:hover{background:#0d47a1}"
     ".note{color:#666;font-size:.82rem;margin-top:8px}"
+    "progress{width:100%;height:22px;margin-top:12px;border-radius:4px}"
+    ".ota-status{margin-top:10px;font-size:.95rem;font-weight:600}"
     "</style>";
 
 static void send_page_head(httpd_req_t *req, const char *title)
@@ -612,6 +616,7 @@ static void send_page_head(httpd_req_t *req, const char *title)
         "<a href='/'>&#x26A1; Prices</a>"
         "<a href='/settings'>&#x2699;&#xFE0F; Settings</a>"
         "<a href='/wifi'>&#x1F4F6; WiFi</a>"
+        "<a href='/ota'>&#x1F4E6; OTA</a>"
         "</nav>");
 }
 
@@ -1055,6 +1060,162 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── /ota GET ────────────────────────────────────────────────────────────── */
+
+static esp_err_t ota_get_handler(httpd_req_t *req)
+{
+    send_page_head(req, "ElereRelay \xe2\x80\x94 OTA Update");
+    httpd_resp_sendstr_chunk(req, "<h1>&#x1F4E6; OTA Firmware Update</h1>");
+
+    /* Current partition info */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *update  = esp_ota_get_next_update_partition(NULL);
+    const esp_app_desc_t  *desc    = esp_app_get_description();
+
+    char info[512];
+    snprintf(info, sizeof(info),
+        "<p class='meta'>Running: <b>%s</b> &nbsp;|&nbsp; "
+        "Version: <b>%s</b> &nbsp;|&nbsp; "
+        "Built: <b>%s %s</b></p>"
+        "<p class='meta'>Next update slot: <b>%s</b></p>",
+        running ? running->label : "?",
+        desc->version,
+        desc->date, desc->time,
+        update ? update->label : "none");
+    httpd_resp_sendstr_chunk(req, info);
+
+    httpd_resp_sendstr_chunk(req,
+        "<p>Select a <code>.bin</code> firmware image built with"
+        " <code>idf.py build</code> (<code>build/elering_relay.bin</code>).</p>"
+        "<input type='file' id='fw' accept='.bin'>"
+        "<p id='fsize' class='note'></p>"
+        "<button id='btn' onclick='doOta()'>Upload &amp; Flash</button>"
+        "<progress id='bar' value='0' max='100' style='display:none'></progress>"
+        "<p id='status' class='ota-status'></p>"
+        "<script>"
+        "document.getElementById('fw').onchange=function(){"
+          "var f=this.files[0];"
+          "if(f)document.getElementById('fsize').textContent="
+            "(f.size/1024).toFixed(1)+' KB';"
+        "};"
+        "function doOta(){"
+          "var f=document.getElementById('fw').files[0];"
+          "if(!f){alert('Select a .bin file first');return;}"
+          "var btn=document.getElementById('btn'),"
+              "bar=document.getElementById('bar'),"
+              "st=document.getElementById('status');"
+          "btn.disabled=true;"
+          "bar.style.display='block';"
+          "st.textContent='Starting upload...';"
+          "var xhr=new XMLHttpRequest();"
+          "xhr.open('POST','/ota');"
+          "xhr.setRequestHeader('Content-Type','application/octet-stream');"
+          "xhr.upload.onprogress=function(e){"
+            "if(e.lengthComputable){"
+              "var pct=Math.round(e.loaded/e.total*100);"
+              "bar.value=pct;"
+              "st.textContent='Uploading... '+pct+'%';"
+            "}"
+          "};"
+          "xhr.onload=function(){"
+            "bar.value=100;"
+            "if(xhr.status===200){"
+              "st.style.color='#1b5e20';"
+              "st.textContent='\u2714 Done! Rebooting \u2014 reconnect in ~5 s';"
+              "setTimeout(function(){window.location.href='/';},7000);"
+            "}else{"
+              "st.style.color='#b71c1c';"
+              "st.textContent='\u2718 Failed: '+xhr.responseText;"
+              "btn.disabled=false;"
+            "}"
+          "};"
+          "xhr.onerror=function(){"
+            "st.style.color='#b71c1c';"
+            "st.textContent='\u2718 Upload error';"
+            "btn.disabled=false;"
+          "};"
+          "xhr.send(f);"
+        "}"
+        "</script>"
+        "</body></html>");
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+/* ── /ota POST ───────────────────────────────────────────────────────────── */
+
+static esp_err_t ota_post_handler(httpd_req_t *req)
+{
+    const esp_partition_t *update = esp_ota_get_next_update_partition(NULL);
+    if (!update) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition found");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(update, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(2048);
+    if (!buf) {
+        esp_ota_abort(ota_handle);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    int written   = 0;
+    bool failed   = false;
+
+    while (remaining > 0) {
+        int to_recv = remaining < 2048 ? remaining : 2048;
+        int recv = httpd_req_recv(req, buf, to_recv);
+        if (recv <= 0) {
+            ESP_LOGE(TAG, "OTA recv error: %d (remaining %d)", recv, remaining);
+            failed = true;
+            break;
+        }
+        err = esp_ota_write(ota_handle, buf, recv);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write: %s", esp_err_to_name(err));
+            failed = true;
+            break;
+        }
+        remaining -= recv;
+        written   += recv;
+    }
+    free(buf);
+
+    if (failed) {
+        esp_ota_abort(ota_handle);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA write failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA validation failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Set boot partition failed");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA success — %d bytes written to %s — rebooting", written, update->label);
+    httpd_resp_sendstr(req, "OK");
+    xTaskCreate(restart_task, "ota_rst", 2048, NULL, 3, NULL);
+    return ESP_OK;
+}
+
 /* ── Web server ──────────────────────────────────────────────────────────── */
 
 static httpd_handle_t start_webserver(void)
@@ -1062,7 +1223,7 @@ static httpd_handle_t start_webserver(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = 80;
     cfg.stack_size       = 8192;
-    cfg.max_uri_handlers = 10;
+    cfg.max_uri_handlers = 12;
 
     httpd_handle_t srv = NULL;
     if (httpd_start(&srv, &cfg) != ESP_OK) {
@@ -1075,6 +1236,8 @@ static httpd_handle_t start_webserver(void)
     static const httpd_uri_t u_wifi_post = { "/wifi",     HTTP_POST, wifi_post_handler,    NULL };
     static const httpd_uri_t u_set_get   = { "/settings", HTTP_GET,  settings_get_handler, NULL };
     static const httpd_uri_t u_set_post  = { "/settings", HTTP_POST, settings_post_handler,NULL };
+    static const httpd_uri_t u_ota_get   = { "/ota",      HTTP_GET,  ota_get_handler,      NULL };
+    static const httpd_uri_t u_ota_post  = { "/ota",      HTTP_POST, ota_post_handler,     NULL };
 
     if (s_ap_mode) {
         httpd_register_uri_handler(srv, &u_root_ap);
@@ -1083,6 +1246,8 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(srv, &u_wifi_get);
         httpd_register_uri_handler(srv, &u_set_get);
         httpd_register_uri_handler(srv, &u_set_post);
+        httpd_register_uri_handler(srv, &u_ota_get);
+        httpd_register_uri_handler(srv, &u_ota_post);
     }
     httpd_register_uri_handler(srv, &u_wifi_post);
 
