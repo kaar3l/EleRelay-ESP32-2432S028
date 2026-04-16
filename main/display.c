@@ -421,7 +421,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         snprintf(dbuf, sizeof(dbuf), "%s %d %s",
                  days[lt.tm_wday], lt.tm_mday, months[lt.tm_mon]);
         int dw = (int)strlen(dbuf) * 8;
-        draw_str(LCD_W / 2 - dw / 2, 8, dbuf, C_GRAY, C_NAVY, 1);
+        draw_str(LCD_W / 2 - dw / 2, 8, dbuf, C_WHITE, C_NAVY, 1);
     }
 
     /* ── Separator ───────────────────────────────────────────────────── */
