@@ -373,7 +373,7 @@ void display_status(const char *line1, const char *line2)
 
         /* Header bar */
         fill_rect(0, 0, LCD_W, 24, C_NAVY);
-        draw_str(4, 4, "EleRelay", C_CYAN, C_NAVY, 2);
+        draw_str(4, 8, "EleRelay", C_WHITE, C_NAVY, 1);
 
         fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
