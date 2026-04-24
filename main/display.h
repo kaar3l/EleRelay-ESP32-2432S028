@@ -7,7 +7,7 @@ typedef struct {
     bool  is_cheap;
 } disp_slot_t;
 
-#define DISP_MAX_BARS 24
+#define DISP_MAX_BARS 48
 
 void display_init(void);
 void display_status(const char *line1, const char *line2);
