@@ -407,21 +407,39 @@ static int cmp_price_asc(const void *a, const void *b)
     return (fa > fb) - (fa < fb);
 }
 
-/* Mark the cheapest 15-min slots as cheap=true.
- * s_cheap_hours is in hours; multiply by 4 to get 15-min slot count. */
+/* Mark the cheapest slots as cheap=true, independently per hours-window.
+ * With a 4h window and 2h cheap setting, exactly 50% of each window is marked. */
 static void mark_cheap_hours(hour_slot_t *slots, int count)
 {
-    int cheap_slots = s_cheap_hours * 4;
-    int n = count < cheap_slots ? count : cheap_slots;
-    if (n <= 0) { for (int i = 0; i < count; i++) slots[i].cheap = false; return; }
-    hour_slot_t tmp[MAX_SLOTS];
-    memcpy(tmp, slots, count * sizeof(hour_slot_t));
-    qsort(tmp, count, sizeof(hour_slot_t), cmp_price_asc);
-    float threshold = tmp[n-1].price;
-    int marked = 0;
-    for (int i = 0; i < count; i++) {
-        if (marked < n && slots[i].price <= threshold) { slots[i].cheap = true; marked++; }
-        else slots[i].cheap = false;
+    if (count == 0) return;
+    for (int i = 0; i < count; i++) slots[i].cheap = false;
+
+    int    cheap_n   = s_cheap_hours * 4;   /* cheap 15-min slots per window */
+    int    win_secs  = (s_hours_window > 0 ? s_hours_window : 1) * 3600;
+    time_t base      = slots[0].ts;
+
+    int i = 0;
+    while (i < count) {
+        /* Find all slots belonging to the same window */
+        int wn = (int)((slots[i].ts - base) / win_secs);
+        int j  = i;
+        while (j < count && (int)((slots[j].ts - base) / win_secs) == wn) j++;
+        int wlen = j - i;
+
+        /* Sort indices of this window's slots by price (insertion sort) */
+        int idx[MAX_SLOTS];
+        for (int k = 0; k < wlen; k++) idx[k] = i + k;
+        for (int a = 1; a < wlen; a++) {
+            int key = idx[a], b = a - 1;
+            while (b >= 0 && slots[idx[b]].price > slots[key].price)
+                { idx[b+1] = idx[b]; b--; }
+            idx[b+1] = key;
+        }
+
+        int n = wlen < cheap_n ? wlen : cheap_n;
+        for (int k = 0; k < n; k++) slots[idx[k]].cheap = true;
+
+        i = j;
     }
 }
 
@@ -429,7 +447,7 @@ static esp_err_t fetch_prices(void)
 {
     time_t now; time(&now);
     time_t win_start = (now / 3600) * 3600;
-    time_t win_end   = win_start + (s_hours_window + 2) * 3600;
+    time_t win_end   = win_start + (MAX_SLOTS / 4) * 3600;
 
     struct tm ts, te;
     gmtime_r(&win_start, &ts);
@@ -588,6 +606,9 @@ static const char *PAGE_CSS =
     "tr.hg td:last-child{border-right:2px solid #888}"
     "tr.hs td{border-top:2px solid #888}"
     "tr.he td{border-bottom:2px solid #888}"
+    "tr.win-sep td{background:#e8eaf6;color:#283593;font-weight:600;"
+                  "font-size:.82rem;text-align:left;border-top:3px solid #5c6bc0;"
+                  "border-bottom:2px solid #9fa8da}"
     "td.ron{color:#2e7d32;font-weight:600}"
     "td.roff{color:#c62828;font-weight:600}"
     ".meta{color:#666;font-size:.82rem;margin:3px 0}"
@@ -999,6 +1020,7 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     time_t      last_fetch = s_last_fetch;
     bool        inv        = s_relay_inv;
     int         max_disp   = s_max_display;
+    int         win_hours  = s_hours_window;
     hour_slot_t local[MAX_SLOTS];
     memcpy(local, s_hours, count * sizeof(hour_slot_t));
     xSemaphoreGive(s_mutex);
@@ -1029,6 +1051,11 @@ static esp_err_t web_get_handler(httpd_req_t *req)
         s_ip, safe_ssid, fetch_str,
         s_hours_window, s_cheap_hours, s_fetch_hour);
     httpd_resp_sendstr_chunk(req, chunk);
+    httpd_resp_sendstr_chunk(req,
+        "<form method='POST' action='/fetch' style='margin:10px 0'>"
+        "<button type='submit' style='width:auto;padding:7px 18px;"
+        "font-size:.9rem'>&#x21BB; Update prices now</button>"
+        "</form>");
 
     if (count == 0) {
         httpd_resp_sendstr_chunk(req,
@@ -1047,7 +1074,23 @@ static esp_err_t web_get_handler(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req, chunk);
 
         time_t cur_hour = (now / 3600) * 3600;
+        time_t win_base = local[0].ts;
+        int    win_secs = (win_hours > 0 ? win_hours : 1) * 3600;
         for (int i = start; i < start + show; i++) {
+            /* Insert window separator row at each hours-window boundary */
+            int this_win = (int)((local[i].ts - win_base) / win_secs);
+            int prev_win = (i > start) ? (int)((local[i-1].ts - win_base) / win_secs) : this_win - 1;
+            if (this_win != prev_win) {
+                time_t ws_ts = win_base + (time_t)this_win * win_secs;
+                struct tm tws; localtime_r(&ws_ts, &tws);
+                char ws_str[20]; strftime(ws_str, sizeof(ws_str), "%Y-%m-%d %H:%M", &tws);
+                snprintf(chunk, sizeof(chunk),
+                    "<tr class='win-sep'><td colspan='3'>"
+                    "&#x1F5D3; Window %d &mdash; %s</td></tr>",
+                    this_win + 1, ws_str);
+                httpd_resp_sendstr_chunk(req, chunk);
+            }
+
             struct tm th; localtime_r(&local[i].ts, &th);
             char hr[20]; strftime(hr, sizeof(hr), "%Y-%m-%d %H:%M", &th);
             bool is_cur   = (local[i].ts == cur_hour);
@@ -1236,6 +1279,19 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── /fetch POST ─────────────────────────────────────────────────────────── */
+
+static esp_err_t fetch_post_handler(httpd_req_t *req)
+{
+    fetch_prices();
+    update_relay();
+    update_display();
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_sendstr(req, "");
+    return ESP_OK;
+}
+
 /* ── Web server ──────────────────────────────────────────────────────────── */
 
 static httpd_handle_t start_webserver(void)
@@ -1256,8 +1312,9 @@ static httpd_handle_t start_webserver(void)
     static const httpd_uri_t u_wifi_post = { "/wifi",     HTTP_POST, wifi_post_handler,    NULL };
     static const httpd_uri_t u_set_get   = { "/settings", HTTP_GET,  settings_get_handler, NULL };
     static const httpd_uri_t u_set_post  = { "/settings", HTTP_POST, settings_post_handler,NULL };
-    static const httpd_uri_t u_ota_get   = { "/ota",      HTTP_GET,  ota_get_handler,      NULL };
-    static const httpd_uri_t u_ota_post  = { "/ota",      HTTP_POST, ota_post_handler,     NULL };
+    static const httpd_uri_t u_ota_get    = { "/ota",    HTTP_GET,  ota_get_handler,    NULL };
+    static const httpd_uri_t u_ota_post   = { "/ota",    HTTP_POST, ota_post_handler,   NULL };
+    static const httpd_uri_t u_fetch_post = { "/fetch",  HTTP_POST, fetch_post_handler, NULL };
 
     if (s_ap_mode) {
         httpd_register_uri_handler(srv, &u_root_ap);
@@ -1268,6 +1325,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(srv, &u_set_post);
         httpd_register_uri_handler(srv, &u_ota_get);
         httpd_register_uri_handler(srv, &u_ota_post);
+        httpd_register_uri_handler(srv, &u_fetch_post);
     }
     httpd_register_uri_handler(srv, &u_wifi_post);
 
