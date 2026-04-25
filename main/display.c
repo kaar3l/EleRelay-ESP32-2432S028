@@ -489,6 +489,15 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
             if (i == cur_idx) col = slots[i].is_cheap ? C_GREEN : C_RED;
             fill_rect(bx, by, bar_w - 1, bar_h, col);
         }
+
+        /* 1px vertical separators at every hours_window boundary (4 slots/h) */
+        if (hours_window > 0) {
+            int slots_per_window = hours_window * 4;
+            for (int i = slots_per_window; i < bars; i += slots_per_window) {
+                int sx = i * bar_w;
+                fill_rect(sx, chart_y, 1, chart_h, C_WHITE);
+            }
+        }
     }
 }
 

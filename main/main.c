@@ -511,6 +511,8 @@ static esp_err_t fetch_prices(void)
     return ESP_OK;
 }
 
+static void update_display(void);   /* forward declaration */
+
 /* ── Relay ───────────────────────────────────────────────────────────────── */
 
 static void update_relay(void)
@@ -582,6 +584,10 @@ static const char *PAGE_CSS =
     "tr.cheap td{background:#e8f5e9}"
     "tr.exp   td{background:#ffebee}"
     "tr.cur   td{outline:2px solid #333;outline-offset:-1px;font-weight:700}"
+    "tr.hg td:first-child{border-left:2px solid #888}"
+    "tr.hg td:last-child{border-right:2px solid #888}"
+    "tr.hs td{border-top:2px solid #888}"
+    "tr.he td{border-bottom:2px solid #888}"
     "td.ron{color:#2e7d32;font-weight:600}"
     "td.roff{color:#c62828;font-weight:600}"
     ".meta{color:#666;font-size:.82rem;margin:3px 0}"
@@ -866,6 +872,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
     update_relay();          /* reflect new inversion + cheap hours instantly */
     nvs_save_settings();
+    update_display();        /* reflect new settings on LCD immediately */
     mqtt_start();            /* restart MQTT client with new settings */
 
     ESP_LOGI(TAG, "Settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
@@ -1027,27 +1034,40 @@ static esp_err_t web_get_handler(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req,
             "<p><i>No price data yet &mdash; fetching&hellip;</i></p>");
     } else {
-        int show = count < max_disp ? count : max_disp;
+        /* Skip 15-min slots that have already ended */
+        int start = 0;
+        while (start < count && local[start].ts + 900 <= now) start++;
+        int avail = count - start;
+        int show  = avail < max_disp ? avail : max_disp;
+
         snprintf(chunk, sizeof(chunk),
-            "<p class='meta'>Showing %d of %d × 15-min slots.</p>"
+            "<p class='meta'>Showing %d of %d future/current × 15-min slots.</p>"
             "<table><tr><th>Time (local)</th><th>Price (c/kWh)</th>"
-            "<th>Relay</th></tr>", show, count);
+            "<th>Relay</th></tr>", show, avail);
         httpd_resp_sendstr_chunk(req, chunk);
 
         time_t cur_hour = (now / 3600) * 3600;
-        for (int i = 0; i < show; i++) {
+        for (int i = start; i < start + show; i++) {
             struct tm th; localtime_r(&local[i].ts, &th);
-            char hr[12]; strftime(hr, sizeof(hr), "%H:%M", &th);
+            char hr[20]; strftime(hr, sizeof(hr), "%Y-%m-%d %H:%M", &th);
             bool is_cur   = (local[i].ts == cur_hour);
             bool is_cheap = local[i].cheap;
             bool ron      = is_cheap ^ inv;        /* physical relay state */
             float cprice  = local[i].price / 10.0f;
+            int this_h = (int)(local[i].ts / 3600);
+            int prev_h = (i > start)            ? (int)(local[i-1].ts / 3600) : -1;
+            int next_h = (i < start + show - 1) ? (int)(local[i+1].ts / 3600) : -1;
+            char row_cls[64];
+            snprintf(row_cls, sizeof(row_cls), "hg %s%s%s%s",
+                is_cheap ? "cheap" : "exp",
+                is_cur ? " cur" : "",
+                prev_h != this_h ? " hs" : "",
+                next_h != this_h ? " he" : "");
             snprintf(chunk, sizeof(chunk),
-                "<tr class='%s %s'>"
+                "<tr class='%s'>"
                 "<td>%s</td><td>%.3f</td>"
                 "<td class='%s'>%s</td></tr>",
-                is_cur ? "cur" : "",
-                is_cheap ? "cheap" : "exp",
+                row_cls,
                 hr, cprice,
                 ron ? "ron" : "roff",
                 ron ? "ON" : "OFF");
