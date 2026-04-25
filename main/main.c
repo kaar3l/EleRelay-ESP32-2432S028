@@ -634,7 +634,10 @@ static void send_page_head(httpd_req_t *req, const char *title)
     httpd_resp_set_type(req, "text/html; charset=UTF-8");
     httpd_resp_sendstr_chunk(req, "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='UTF-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>");
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='icon' href=\"data:image/svg+xml,"
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+        "<text y='.9em' font-size='90'>&#x26A1;</text></svg>\">");
     snprintf(buf, sizeof(buf), "<title>%s</title>", title);
     httpd_resp_sendstr_chunk(req, buf);
     httpd_resp_sendstr_chunk(req, PAGE_CSS);
