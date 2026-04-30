@@ -126,6 +126,12 @@ static int   s_http_len = 0;
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 
+/* ── Touch / screen state ────────────────────────────────────────────────── */
+typedef enum { SCREEN_MAIN, SCREEN_CONFIG } screen_t;
+static volatile screen_t s_screen    = SCREEN_MAIN;
+static int               s_cfg_window = 0;
+static int               s_cfg_cheap  = 0;
+
 /* ── NVS: WiFi credentials ───────────────────────────────────────────────── */
 
 static esp_err_t nvs_load_creds(char *ssid, char *pass)
@@ -1340,6 +1346,7 @@ static httpd_handle_t start_webserver(void)
 
 static void update_display(void)
 {
+    if (s_screen == SCREEN_CONFIG) return;  /* don't overwrite config page */
     time_t now; time(&now);
     time_t cur_slot = (now / 900) * 900;
 
@@ -1368,6 +1375,68 @@ static void update_display(void)
     display_update(relay_on, ap_mode, s_wifi_ssid,
                    now, dslots, dcount, 0,
                    s_cheap_hours, s_hours_window);
+}
+
+/* ── Touch task ──────────────────────────────────────────────────────────── */
+
+static void touch_task(void *arg)
+{
+    bool was_touched = false;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        int tx, ty;
+        bool touched = display_touch_read(&tx, &ty);
+
+        if (!touched) { was_touched = false; continue; }
+        if (was_touched) continue;  /* wait for finger lift before next event */
+        was_touched = true;
+
+        if (s_screen == SCREEN_MAIN) {
+            xSemaphoreTake(s_mutex, portMAX_DELAY);
+            s_cfg_window = s_hours_window;
+            s_cfg_cheap  = s_cheap_hours;
+            xSemaphoreGive(s_mutex);
+            s_screen = SCREEN_CONFIG;
+            display_show_config(s_cfg_cheap, s_cfg_window);
+        } else {
+            int btn = display_config_hittest(tx, ty);
+            switch (btn) {
+            case DISP_CFG_CLOSE:
+                s_screen = SCREEN_MAIN;
+                update_display();
+                break;
+            case DISP_CFG_WIN_DEC:
+                if (s_cfg_window > 2) s_cfg_window--;
+                if (s_cfg_cheap >= s_cfg_window) s_cfg_cheap = s_cfg_window - 1;
+                display_show_config(s_cfg_cheap, s_cfg_window);
+                break;
+            case DISP_CFG_WIN_INC:
+                if (s_cfg_window < 24) s_cfg_window++;
+                display_show_config(s_cfg_cheap, s_cfg_window);
+                break;
+            case DISP_CFG_CHE_DEC:
+                if (s_cfg_cheap > 1) s_cfg_cheap--;
+                display_show_config(s_cfg_cheap, s_cfg_window);
+                break;
+            case DISP_CFG_CHE_INC:
+                if (s_cfg_cheap < s_cfg_window - 1) s_cfg_cheap++;
+                display_show_config(s_cfg_cheap, s_cfg_window);
+                break;
+            case DISP_CFG_SAVE:
+                xSemaphoreTake(s_mutex, portMAX_DELAY);
+                s_hours_window = s_cfg_window;
+                s_cheap_hours  = s_cfg_cheap;
+                mark_cheap_hours(s_hours, s_hour_count);
+                xSemaphoreGive(s_mutex);
+                nvs_save_settings();
+                update_relay();
+                s_screen = SCREEN_MAIN;
+                update_display();
+                break;
+            default: break;
+            }
+        }
+    }
 }
 
 /* ── Controller task ─────────────────────────────────────────────────────── */
@@ -1407,8 +1476,9 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "ElereRelay booting (relay GPIO%d)", CONFIG_RELAY_GPIO);
 
-    /* Display */
+    /* Display + touch */
     display_init();
+    display_touch_init();
     display_status("Booting...", NULL);
 
     /* NVS */
@@ -1477,11 +1547,13 @@ void app_main(void)
         mqtt_start();
         start_webserver();
         xTaskCreate(controller_task, "ctrl", 8192, NULL, 5, NULL);
+        xTaskCreate(touch_task, "touch", 4096, NULL, 4, NULL);
     } else {
         s_ap_mode = true;
         ESP_LOGW(TAG, "STA failed — AP mode");
         wifi_start_ap();
         start_webserver();
         update_display();   /* show AP mode on screen */
+        xTaskCreate(touch_task, "touch", 4096, NULL, 4, NULL);
     }
 }

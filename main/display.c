@@ -16,10 +16,13 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_lcd_panel_io.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
 #include <stdio.h>
+
+static const char *TAG = "touch";
 
 /* ── ESP-2432S028 pin map ───────────────────────────────────────────────── */
 #define LCD_MOSI   13
@@ -180,6 +183,82 @@ static const uint8_t font8x8[95][8] = {
 
 /* ── Globals ────────────────────────────────────────────────────────────── */
 static esp_lcd_panel_io_handle_t s_io = NULL;
+
+/* ── XPT2046 touch controller ────────────────────────────────────────────── */
+#define TOUCH_CLK    25
+#define TOUCH_CS     33
+#define TOUCH_MOSI   32
+#define TOUCH_MISO   39
+#define TOUCH_IRQ    36
+#define TOUCH_HOST   SPI3_HOST
+
+/* Raw ADC at screen edges (calibrated from corner taps) */
+#define T_X_MIN   240   /* 0x90 at left edge  */
+#define T_X_MAX  3625   /* 0x90 at right edge */
+#define T_Y_MIN   397   /* 0xD0 at top edge   */
+#define T_Y_MAX  3717   /* 0xD0 at bottom edge*/
+
+static spi_device_handle_t s_touch = NULL;
+
+static uint16_t xpt_sample(uint8_t cmd)
+{
+    uint8_t tx[3] = { cmd, 0, 0 };
+    uint8_t rx[3] = { 0, 0, 0 };
+    spi_transaction_t t = { .length = 24, .tx_buffer = tx, .rx_buffer = rx };
+    spi_device_polling_transmit(s_touch, &t);
+    return ((uint16_t)(rx[1] << 8) | rx[2]) >> 3;
+}
+
+void display_touch_init(void)
+{
+    spi_bus_config_t bus = {
+        .mosi_io_num   = TOUCH_MOSI,
+        .miso_io_num   = TOUCH_MISO,
+        .sclk_io_num   = TOUCH_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+    spi_bus_initialize(TOUCH_HOST, &bus, SPI_DMA_DISABLED);
+
+    spi_device_interface_config_t dev = {
+        .clock_speed_hz = 2 * 1000 * 1000,
+        .mode           = 0,
+        .spics_io_num   = TOUCH_CS,
+        .queue_size     = 1,
+    };
+    spi_bus_add_device(TOUCH_HOST, &dev, &s_touch);
+    gpio_set_direction(TOUCH_IRQ, GPIO_MODE_INPUT);
+}
+
+bool display_touch_read(int *sx, int *sy)
+{
+    if (!s_touch) return false;
+    if (gpio_get_level(TOUCH_IRQ)) return false;  /* not touched */
+
+    /* Average 4 samples per axis.
+     * On CYD (MADCTL=0x28): 0x90 → screen X, 0xD0 → screen Y (inverted). */
+    int r90 = 0, rd0 = 0;
+    for (int i = 0; i < 4; i++) {
+        r90 += xpt_sample(0x90);
+        rd0 += xpt_sample(0xD0);
+    }
+    r90 /= 4; rd0 /= 4;
+
+    /* Log raw values so calibration constants can be tuned */
+    ESP_LOGI(TAG, "raw 0x90=%d 0xD0=%d", r90, rd0);
+
+    /* Map to screen coordinates:
+     *   X: 0x90 low→left, high→right
+     *   Y: 0xD0 high→top, low→bottom (inverted) */
+    int x = (r90 - T_X_MIN) * (LCD_W - 1) / (T_X_MAX - T_X_MIN);
+    int y = (rd0 - T_Y_MIN) * (LCD_H - 1) / (T_Y_MAX - T_Y_MIN);
+    if (x < 0) x = 0;
+    if (x >= LCD_W) x = LCD_W - 1;
+    if (y < 0) y = 0;
+    if (y >= LCD_H) y = LCD_H - 1;
+    *sx = x; *sy = y;
+    return true;
+}
 
 /*
  * Stripe framebuffer: 30 rows × 320 cols × 2 bytes = 19,200 bytes.
@@ -499,6 +578,100 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
             }
         }
     }
+}
+
+/* ── Config page ─────────────────────────────────────────────────────────── */
+
+/* Button regions — shared between render and hittest */
+#define CFG_BTN_W      60
+#define CFG_BTN_H      36
+#define CFG_DEC_X      20    /* left edge of [−] buttons */
+#define CFG_INC_X     240    /* left edge of [+] buttons */
+#define CFG_WIN_Y      50    /* top of window row */
+#define CFG_CHE_Y     115    /* top of cheap-hours row */
+#define CFG_SAVE_X1    60
+#define CFG_SAVE_X2   259
+#define CFG_SAVE_Y1   175
+#define CFG_SAVE_Y2   210
+#define CFG_CLOSE_X1  282
+
+static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
+{
+    fill_rect(x, y, w, h, bg);
+    fill_rect(x, y, w, 1, C_GRAY);
+    fill_rect(x, y + h - 1, w, 1, C_GRAY);
+    fill_rect(x, y, 1, h, C_GRAY);
+    fill_rect(x + w - 1, y, 1, h, C_GRAY);
+    int tw = (int)strlen(text) * 8 * 2;
+    draw_str(x + (w - tw) / 2, y + (h - 16) / 2, text, C_WHITE, bg, 2);
+}
+
+static void render_config_page(int cheap_hours, int hours_window)
+{
+    /* Header */
+    fill_rect(0, 0, LCD_W, 24, C_NAVY);
+    draw_str(4, 8, "Config", C_WHITE, C_NAVY, 1);
+    fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
+    draw_str(CFG_CLOSE_X1 + 10, 8, "X", C_WHITE, C_DKRED, 1);
+    fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
+
+    /* Window size row */
+    draw_str(4, 34, "Window size:", C_GRAY, C_BLACK, 1);
+    draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
+    draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
+    char vbuf[8];
+    snprintf(vbuf, sizeof(vbuf), "%dh", hours_window);
+    {
+        int vw = (int)strlen(vbuf) * 24;  /* scale 3 */
+        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
+        draw_str(vx, CFG_WIN_Y + 6, vbuf, C_WHITE, C_BLACK, 3);
+    }
+
+    /* Cheap hours row */
+    draw_str(4, 99, "Cheap hours:", C_GRAY, C_BLACK, 1);
+    draw_btn(CFG_DEC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
+    draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
+    snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
+    {
+        int vw = (int)strlen(vbuf) * 24;
+        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
+        draw_str(vx, CFG_CHE_Y + 6, vbuf, C_WHITE, C_BLACK, 3);
+    }
+
+    draw_str(4, 157, "cheap < window", C_DKGRAY, C_BLACK, 1);
+
+    /* Save button */
+    draw_btn(CFG_SAVE_X1, CFG_SAVE_Y1,
+             CFG_SAVE_X2 - CFG_SAVE_X1, CFG_SAVE_Y2 - CFG_SAVE_Y1,
+             "SAVE", C_DKGREEN);
+}
+
+void display_show_config(int cheap_hours, int hours_window)
+{
+    for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
+        int rows = STRIPE_H;
+        if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
+        memset(s_fb, 0, LCD_W * rows * 2);
+        render_config_page(cheap_hours, hours_window);
+        flush_stripe(rows);
+    }
+    s_sy0 = 0;
+}
+
+int display_config_hittest(int tx, int ty)
+{
+    if (tx >= CFG_CLOSE_X1 && ty <= 23) return DISP_CFG_CLOSE;
+    if (tx >= CFG_DEC_X && tx < CFG_DEC_X + CFG_BTN_W) {
+        if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_DEC;
+        if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_DEC;
+    }
+    if (tx >= CFG_INC_X && tx < CFG_INC_X + CFG_BTN_W) {
+        if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_INC;
+        if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_INC;
+    }
+    if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
+        ty >= CFG_SAVE_Y1 && ty <= CFG_SAVE_Y2) return DISP_CFG_SAVE;
+    return -1;
 }
 
 void display_update(bool relay_on, bool ap_mode, const char *ssid,
