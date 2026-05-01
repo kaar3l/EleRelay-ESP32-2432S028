@@ -13,7 +13,7 @@ void display_init(void);
 void display_status(const char *line1, const char *line2);
 void display_update(bool relay_on, bool ap_mode, const char *ssid,
                     time_t now, const disp_slot_t *slots, int count, int cur_idx,
-                    int cheap_hours, int hours_window);
+                    int cheap_hours, int hours_window, int win_offset);
 
 /* Touch controller (XPT2046) */
 void display_touch_init(void);

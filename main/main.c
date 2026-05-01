@@ -1473,9 +1473,10 @@ static void update_display(void)
         dslots[dcount].is_cheap      = local[i].cheap;
     }
 
+    int win_offset = (s_hours_window > 0) ? cur_idx % (s_hours_window * 4) : 0;
     display_update(relay_on, ap_mode, s_wifi_ssid,
                    now, dslots, dcount, 0,
-                   s_cheap_hours, s_hours_window);
+                   s_cheap_hours, s_hours_window, win_offset);
 }
 
 /* ── Touch task ──────────────────────────────────────────────────────────── */

@@ -486,7 +486,7 @@ void display_status(const char *line1, const char *line2)
 /* ── Render scene into current stripe (all draw calls self-clip) ─────────── */
 static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
                          time_t now, const disp_slot_t *slots, int count,
-                         int cur_idx, int cheap_hours, int hours_window)
+                         int cur_idx, int cheap_hours, int hours_window, int win_offset)
 {
     /* ── Header bar (y 0..23, dark blue BG) ─────────────────────────── */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
@@ -583,7 +583,10 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         /* 1px vertical separators at every hours_window boundary (4 slots/h) */
         if (hours_window > 0) {
             int slots_per_window = hours_window * 4;
-            for (int i = slots_per_window; i < bars; i += slots_per_window) {
+            /* first_sep: how many bars until the next true window boundary */
+            int first_sep = (win_offset == 0) ? slots_per_window
+                                              : (slots_per_window - win_offset);
+            for (int i = first_sep; i < bars; i += slots_per_window) {
                 int sx = i * bar_w;
                 fill_rect(sx, chart_y, 1, chart_h, C_WHITE);
             }
@@ -687,7 +690,7 @@ int display_config_hittest(int tx, int ty)
 
 void display_update(bool relay_on, bool ap_mode, const char *ssid,
                     time_t now, const disp_slot_t *slots, int count, int cur_idx,
-                    int cheap_hours, int hours_window)
+                    int cheap_hours, int hours_window, int win_offset)
 {
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
@@ -695,7 +698,7 @@ void display_update(bool relay_on, bool ap_mode, const char *ssid,
 
         memset(s_fb, 0, LCD_W * rows * 2);
         render_scene(relay_on, ap_mode, ssid, now, slots, count, cur_idx,
-                     cheap_hours, hours_window);
+                     cheap_hours, hours_window, win_offset);
         flush_stripe(rows);
     }
     s_sy0 = 0;
