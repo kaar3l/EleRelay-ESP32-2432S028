@@ -29,3 +29,8 @@ bool display_touch_read(int *x, int *y);   /* screen coords; true = finger down 
 
 void display_show_config(int cheap_hours, int hours_window);
 int  display_config_hittest(int tx, int ty);
+
+/* Language */
+#define LANG_EN 0
+#define LANG_ET 1
+void display_set_lang(int lang);

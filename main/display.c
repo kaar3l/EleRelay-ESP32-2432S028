@@ -183,6 +183,12 @@ static const uint8_t font8x8[95][8] = {
 
 /* ── Globals ────────────────────────────────────────────────────────────── */
 static esp_lcd_panel_io_handle_t s_io = NULL;
+static int s_disp_lang = LANG_EN;
+
+void display_set_lang(int lang) { s_disp_lang = lang; }
+
+/* Picks between English and Estonian string (LCD must stay ASCII) */
+#define DT(en, et) (s_disp_lang == LANG_ET ? (et) : (en))
 
 /* ── XPT2046 touch controller ────────────────────────────────────────────── */
 #define TOUCH_CLK    25
@@ -493,9 +499,14 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d", lt.tm_hour, lt.tm_min);
         draw_str(LCD_W - 5 * 16 - 4, 4, tbuf, C_WHITE, C_NAVY, 2);
 
-        static const char *days[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-        static const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
-                                       "Jul","Aug","Sep","Oct","Nov","Dec"};
+        static const char *days_en[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+        static const char *days_et[] = {"Puh","Esm","Tei","Kol","Nel","Ree","Lau"};
+        static const char *mon_en[]  = {"Jan","Feb","Mar","Apr","May","Jun",
+                                        "Jul","Aug","Sep","Oct","Nov","Dec"};
+        static const char *mon_et[]  = {"Jan","Veb","Mar","Apr","Mai","Jun",
+                                        "Jul","Aug","Sep","Okt","Nov","Det"};
+        const char **days   = s_disp_lang == LANG_ET ? days_et : days_en;
+        const char **months = s_disp_lang == LANG_ET ? mon_et  : mon_en;
         char dbuf[16];
         snprintf(dbuf, sizeof(dbuf), "%s %d %s",
                  days[lt.tm_wday], lt.tm_mday, months[lt.tm_mon]);
@@ -509,7 +520,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     /* ── Relay status (y 26..99, large text) ────────────────────────── */
     const char *relay_str = relay_on ? "ON " : "OFF";
     uint16_t relay_col    = relay_on ? C_GREEN : C_RED;
-    draw_str(4, 28, "RELAY", C_GRAY, C_BLACK, 2);
+    draw_str(4, 28, DT("RELAY", "RELEE"), C_GRAY, C_BLACK, 2);
     draw_str(4, 52, relay_str, relay_col, C_BLACK, 4);  /* 32 px tall */
 
     /* ── Current price (right half of relay area) ────────────────────── */
@@ -519,7 +530,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         char pbuf[20];
         snprintf(pbuf, sizeof(pbuf), "%.1fc", price_c);
         uint16_t pc = cur->is_cheap ? C_GREEN : C_RED;
-        draw_str(176, 28, cur->is_cheap ? "CHEAP" : "EXPNS", pc, C_BLACK, 2);
+        draw_str(176, 28, cur->is_cheap ? DT("CHEAP","ODAV") : DT("EXPNS","KALLIS"), pc, C_BLACK, 2);
         draw_str(176, 52, pbuf, C_WHITE, C_BLACK, 3);
         draw_str(176, 84, "/kWh", C_GRAY, C_BLACK, 1);
     }
@@ -610,13 +621,13 @@ static void render_config_page(int cheap_hours, int hours_window)
 {
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 8, "Config", C_WHITE, C_NAVY, 1);
+    draw_str(4, 8, DT("Config", "Seaded"), C_WHITE, C_NAVY, 1);
     fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
     draw_str(CFG_CLOSE_X1 + 10, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
     /* Window size row */
-    draw_str(4, 34, "Window size:", C_GRAY, C_BLACK, 1);
+    draw_str(4, 34, DT("Window size:", "Akna suurus:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     char vbuf[8];
@@ -628,7 +639,7 @@ static void render_config_page(int cheap_hours, int hours_window)
     }
 
     /* Cheap hours row */
-    draw_str(4, 99, "Cheap hours:", C_GRAY, C_BLACK, 1);
+    draw_str(4, 99, DT("Cheap hours:", "Odavad tunnid:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
@@ -638,12 +649,12 @@ static void render_config_page(int cheap_hours, int hours_window)
         draw_str(vx, CFG_CHE_Y + 6, vbuf, C_WHITE, C_BLACK, 3);
     }
 
-    draw_str(4, 157, "cheap < window", C_DKGRAY, C_BLACK, 1);
+    draw_str(4, 157, DT("cheap < window", "odav < aken"), C_DKGRAY, C_BLACK, 1);
 
     /* Save button */
     draw_btn(CFG_SAVE_X1, CFG_SAVE_Y1,
              CFG_SAVE_X2 - CFG_SAVE_X1, CFG_SAVE_Y2 - CFG_SAVE_Y1,
-             "SAVE", C_DKGREEN);
+             DT("SAVE", "SALVESTA"), C_DKGREEN);
 }
 
 void display_show_config(int cheap_hours, int hours_window)

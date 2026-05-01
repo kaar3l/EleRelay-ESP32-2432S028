@@ -77,6 +77,10 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_MQTT_PORT "mqtt_port"
 #define NVS_KEY_MQTT_TPRC "mqtt_topic_p"
 #define NVS_KEY_MQTT_TRLY "mqtt_topic_r"
+#define NVS_KEY_LANG      "lang"
+
+/* Picks between English and Estonian at runtime */
+#define T(en, et) (s_lang == LANG_ET ? (et) : (en))
 
 #define CRED_LEN         64
 #define STR_LEN          64
@@ -85,6 +89,7 @@ static const char *TAG = "elerelay";
 
 static int  s_hours_window = CONFIG_HOURS_WINDOW;  /* 2-24               */
 static int  s_cheap_hours  = CONFIG_CHEAP_HOURS;   /* 1 .. window-1      */
+static int  s_lang         = LANG_EN;              /* LANG_EN / LANG_ET  */
 static bool s_relay_inv    = false;                /* invert relay logic */
 static int  s_fetch_hour   = 23;                   /* 0-23               */
 static int  s_max_display  = 48;                   /* max rows in table  */
@@ -172,6 +177,7 @@ static void nvs_load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_FETCHH,  &v) == ESP_OK) s_fetch_hour   = v;
     if (nvs_get_u8(h, NVS_KEY_MAXDISP, &v) == ESP_OK) s_max_display  = v;
     if (nvs_get_u8(h, NVS_KEY_MQTT_EN, &v) == ESP_OK) s_mqtt_enabled = (bool)v;
+    if (nvs_get_u8(h, NVS_KEY_LANG,    &v) == ESP_OK) s_lang         = v;
 
     uint16_t port;
     if (nvs_get_u16(h, NVS_KEY_MQTT_PORT, &port) == ESP_OK) s_mqtt_port = port;
@@ -197,6 +203,7 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_FETCHH,    (uint8_t)s_fetch_hour);
     err |= nvs_set_u8(h,  NVS_KEY_MAXDISP,   (uint8_t)s_max_display);
     err |= nvs_set_u8(h,  NVS_KEY_MQTT_EN,   (uint8_t)s_mqtt_enabled);
+    err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
     err |= nvs_set_str(h, NVS_KEY_NTP_SRV,   s_ntp_server);
     err |= nvs_set_str(h, NVS_KEY_TZ,        s_tz_str);
@@ -636,94 +643,116 @@ static const char *PAGE_CSS =
 
 static void send_page_head(httpd_req_t *req, const char *title)
 {
-    char buf[256];
+    char buf[512];
     httpd_resp_set_type(req, "text/html; charset=UTF-8");
-    httpd_resp_sendstr_chunk(req, "<!DOCTYPE html><html lang='en'><head>"
+    snprintf(buf, sizeof(buf),
+        "<!DOCTYPE html><html lang='%s'><head>"
         "<meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<link rel='icon' href=\"data:image/svg+xml,"
         "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
-        "<text y='.9em' font-size='90'>&#x26A1;</text></svg>\">");
+        "<text y='.9em' font-size='90'>&#x26A1;</text></svg>\">",
+        T("en", "et"));
+    httpd_resp_sendstr_chunk(req, buf);
     snprintf(buf, sizeof(buf), "<title>%s</title>", title);
     httpd_resp_sendstr_chunk(req, buf);
     httpd_resp_sendstr_chunk(req, PAGE_CSS);
-    httpd_resp_sendstr_chunk(req, "</head><body>"
-        "<nav>"
-        "<a href='/'>&#x26A1; Prices</a>"
-        "<a href='/settings'>&#x2699;&#xFE0F; Settings</a>"
+    snprintf(buf, sizeof(buf),
+        "</head><body><nav>"
+        "<a href='/'>&#x26A1; %s</a>"
+        "<a href='/settings'>&#x2699;&#xFE0F; %s</a>"
         "<a href='/wifi'>&#x1F4F6; WiFi</a>"
         "<a href='/ota'>&#x1F4E6; OTA</a>"
-        "</nav>");
+        "</nav>",
+        T("Prices", "Hinnad"),
+        T("Settings", "Seaded"));
+    httpd_resp_sendstr_chunk(req, buf);
 }
 
 /* ── /settings GET ───────────────────────────────────────────────────────── */
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
-    send_page_head(req, "ElereRelay \xe2\x80\x94 Settings");
-    httpd_resp_sendstr_chunk(req, "<h1>&#x2699;&#xFE0F; Settings</h1>"
-        "<form method='POST' action='/settings'>");
+    send_page_head(req, T("ElereRelay \xe2\x80\x94 Settings", "ElereRelay \xe2\x80\x94 Seaded"));
+    char chunk[512];
+    snprintf(chunk, sizeof(chunk), "<h1>&#x2699;&#xFE0F; %s</h1>"
+        "<form method='POST' action='/settings'>", T("Settings", "Seaded"));
+    httpd_resp_sendstr_chunk(req, chunk);
 
     /* ── Relay / price settings ── */
-    httpd_resp_sendstr_chunk(req, "<h2>Relay &amp; Price</h2>");
+    snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Relay &amp; Price", "Relee &amp; Hind"));
+    httpd_resp_sendstr_chunk(req, chunk);
 
     /* Hours window dropdown */
-    char chunk[256];
-    httpd_resp_sendstr_chunk(req, "<label>Hours window"
-        "<select name='window'>");
+    snprintf(chunk, sizeof(chunk), "<label>%s<select name='window'>",
+             T("Hours window", "Ajaaken"));
+    httpd_resp_sendstr_chunk(req, chunk);
     for (int i = 2; i <= 24; i++) {
-        snprintf(chunk, sizeof(chunk), "<option value='%d'%s>%d hours</option>",
-                 i, i == s_hours_window ? " selected" : "", i);
+        snprintf(chunk, sizeof(chunk), "<option value='%d'%s>%d %s</option>",
+                 i, i == s_hours_window ? " selected" : "", i, T("hours", "tundi"));
         httpd_resp_sendstr_chunk(req, chunk);
     }
     httpd_resp_sendstr_chunk(req, "</select></label>");
 
     /* Cheap hours number */
     {
-        char buf[192];
+        char buf[256];
         snprintf(buf, sizeof(buf),
-            "<label>Cheap hours (N&times;4 cheapest 15-min slots = ON)"
+            "<label>%s"
             "<input type='number' name='cheap' min='1' max='23' value='%d'>"
-            "</label>", s_cheap_hours);
+            "</label>",
+            T("Cheap hours (N&times;4 cheapest 15-min slots = ON)",
+              "Odavad tunnid (N&times;4 odavamat 15-min perioodi = SEES)"),
+            s_cheap_hours);
         httpd_resp_sendstr_chunk(req, buf);
     }
 
     /* Relay inverted checkbox */
     {
-        char buf[256];
+        char buf[320];
         snprintf(buf, sizeof(buf),
             "<div class='chk'>"
             "<input type='checkbox' name='inv' id='inv'%s>"
-            "<label for='inv' style='margin:0;color:#222'>"
-            "Inverted &mdash; ON during expensive hours</label>"
-            "</div>", s_relay_inv ? " checked" : "");
+            "<label for='inv' style='margin:0;color:#222'>%s</label>"
+            "</div>",
+            s_relay_inv ? " checked" : "",
+            T("Inverted &mdash; ON during expensive hours",
+              "P&ouml;&ouml;ratud &mdash; SEES kallite tundide ajal"));
         httpd_resp_sendstr_chunk(req, buf);
     }
 
     /* Fetch hour dropdown */
-    httpd_resp_sendstr_chunk(req, "<label>Fetch prices at (daily)"
-        "<select name='fetch_h'>");
+    snprintf(chunk, sizeof(chunk), "<label>%s<select name='fetch_h'>",
+             T("Fetch prices at (daily)", "Laadi hinnad (iga p&auml;ev)"));
+    httpd_resp_sendstr_chunk(req, chunk);
     for (int h = 0; h < 24; h++) {
         snprintf(chunk, sizeof(chunk), "<option value='%d'%s>%02d:00</option>",
                  h, h == s_fetch_hour ? " selected" : "", h);
         httpd_resp_sendstr_chunk(req, chunk);
     }
-    httpd_resp_sendstr_chunk(req, "</select></label>"
-        "<p class='note'>Elering publishes next-day prices around 14:00 EET."
-        " Fetching at 23:00 ensures a full set of tomorrow&rsquo;s prices.</p>");
+    httpd_resp_sendstr_chunk(req, "</select></label>");
+    snprintf(chunk, sizeof(chunk), "<p class='note'>%s</p>",
+        T("Elering publishes next-day prices around 14:00 EET."
+          " Fetching at 23:00 ensures a full set of tomorrow&rsquo;s prices.",
+          "Elering avaldab j&auml;rgmise p&auml;eva hinnad umbes 14:00 EET."
+          " Laadimine kell 23:00 tagab t&auml;ieliku hinnakomplekti."));
+    httpd_resp_sendstr_chunk(req, chunk);
 
     /* Max display rows */
     {
         char buf[256];
         snprintf(buf, sizeof(buf),
-            "<label>Max slots on price page (4 = 1 h)"
+            "<label>%s"
             "<input type='number' name='max_disp' min='1' max='%d' value='%d'>"
-            "</label>", MAX_SLOTS, s_max_display);
+            "</label>",
+            T("Max slots on price page (4 = 1 h)", "Maks perioode hinna lehel (4 = 1 h)"),
+            MAX_SLOTS, s_max_display);
         httpd_resp_sendstr_chunk(req, buf);
     }
 
     /* ── Time settings ── */
-    httpd_resp_sendstr_chunk(req, "<h2>Time</h2>");
+    snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Time", "Aeg"));
+    httpd_resp_sendstr_chunk(req, chunk);
 
     /* NTP server */
     {
@@ -743,14 +772,16 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         html_escape(s_tz_str, safe, sizeof(safe));
         char buf[768];
         snprintf(buf, sizeof(buf),
-            "<label>Timezone (POSIX TZ string)"
+            "<label>%s"
             "<input type='text' name='tz_str' maxlength='%d' value='%s'>"
             "</label>"
-            "<p class='note'>Examples: "
+            "<p class='note'>%s: "
             "<code>EET-2EEST,M3.5.0/3,M10.5.0/4</code> (Estonia), "
             "<code>UTC0</code>, "
             "<code>CET-1CEST,M3.5.0,M10.5.0/3</code> (Central Europe)</p>",
-            STR_LEN - 1, safe);
+            T("Timezone (POSIX TZ string)", "Ajev&ouml;&ouml;nd (POSIX)"),
+            STR_LEN - 1, safe,
+            T("Examples", "N&auml;ited"));
         httpd_resp_sendstr_chunk(req, buf);
     }
 
@@ -759,13 +790,14 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
 
     /* MQTT enabled checkbox */
     {
-        char buf[256];
+        char buf[320];
         snprintf(buf, sizeof(buf),
             "<div class='chk'>"
             "<input type='checkbox' name='mqtt_en' id='mqtt_en'%s>"
-            "<label for='mqtt_en' style='margin:0;color:#222'>"
-            "Enable MQTT publishing</label>"
-            "</div>", s_mqtt_enabled ? " checked" : "");
+            "<label for='mqtt_en' style='margin:0;color:#222'>%s</label>"
+            "</div>",
+            s_mqtt_enabled ? " checked" : "",
+            T("Enable MQTT publishing", "Luba MQTT avaldamine"));
         httpd_resp_sendstr_chunk(req, buf);
     }
 
@@ -775,10 +807,12 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         html_escape(s_mqtt_host, safe, sizeof(safe));
         char buf[640];
         snprintf(buf, sizeof(buf),
-            "<label>MQTT server hostname / IP"
+            "<label>%s"
             "<input type='text' name='mqtt_host' maxlength='%d' value='%s'"
             " placeholder='e.g. 192.168.1.10 or broker.local'>"
-            "</label>", STR_LEN - 1, safe);
+            "</label>",
+            T("MQTT server hostname / IP", "MQTT serveri aadress / IP"),
+            STR_LEN - 1, safe);
         httpd_resp_sendstr_chunk(req, buf);
     }
 
@@ -786,9 +820,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     {
         char buf[192];
         snprintf(buf, sizeof(buf),
-            "<label>MQTT port"
+            "<label>%s"
             "<input type='number' name='mqtt_port' min='1' max='65535' value='%d'>"
-            "</label>", s_mqtt_port);
+            "</label>",
+            T("MQTT port", "MQTT port"), s_mqtt_port);
         httpd_resp_sendstr_chunk(req, buf);
     }
 
@@ -798,9 +833,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         html_escape(s_mqtt_topic_price, safe, sizeof(safe));
         char buf[512];
         snprintf(buf, sizeof(buf),
-            "<label>Price topic"
+            "<label>%s"
             "<input type='text' name='mqtt_topic_p' maxlength='%d' value='%s'>"
-            "</label>", STR_LEN - 1, safe);
+            "</label>",
+            T("Price topic", "Hinna teema"), STR_LEN - 1, safe);
         httpd_resp_sendstr_chunk(req, buf);
     }
 
@@ -810,18 +846,35 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         html_escape(s_mqtt_topic_relay, safe, sizeof(safe));
         char buf[640];
         snprintf(buf, sizeof(buf),
-            "<label>Relay state topic"
+            "<label>%s"
             "<input type='text' name='mqtt_topic_r' maxlength='%d' value='%s'>"
             "</label>"
-            "<p class='note'>Publishes price in c/kWh and relay state"
-            " (<code>ON</code>/<code>OFF</code>) with retain=1 on every"
-            " relay update.</p>", STR_LEN - 1, safe);
+            "<p class='note'>%s</p>",
+            T("Relay state topic", "Relee oleku teema"), STR_LEN - 1, safe,
+            T("Publishes price in c/kWh and relay state"
+              " (<code>ON</code>/<code>OFF</code>) with retain=1 on every relay update.",
+              "Avaldab hinna s/kWh ja relee oleku"
+              " (<code>ON</code>/<code>OFF</code>) retain=1 iga relee muutuse korral."));
         httpd_resp_sendstr_chunk(req, buf);
     }
 
-    httpd_resp_sendstr_chunk(req,
-        "<button type='submit'>Save settings</button>"
-        "</form></body></html>");
+    /* ── Language / Keel ── */
+    httpd_resp_sendstr_chunk(req, "<h2>Keel / Language</h2>");
+    snprintf(chunk, sizeof(chunk),
+        "<label>Keel / Language"
+        "<select name='lang'>"
+        "<option value='0'%s>English</option>"
+        "<option value='1'%s>Eesti</option>"
+        "</select></label>",
+        s_lang == LANG_EN ? " selected" : "",
+        s_lang == LANG_ET ? " selected" : "");
+    httpd_resp_sendstr_chunk(req, chunk);
+
+    snprintf(chunk, sizeof(chunk),
+        "<button type='submit'>%s</button>"
+        "</form></body></html>",
+        T("Save settings", "Salvesta seaded"));
+    httpd_resp_sendstr_chunk(req, chunk);
     httpd_resp_sendstr_chunk(req, NULL);
     return ESP_OK;
 }
@@ -879,6 +932,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "mqtt_topic_r", mqtt_topic_r, sizeof(mqtt_topic_r));
     if (mqtt_topic_r[0] == '\0') strlcpy(mqtt_topic_r, "elerelay/relay", sizeof(mqtt_topic_r));
 
+    form_field(body, "lang", val, sizeof(val));
+    int new_lang = clamp(atoi(val), 0, 1);
+
     /* Apply immediately */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_hours_window = window;
@@ -893,8 +949,10 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     s_mqtt_port    = mqtt_port;
     strlcpy(s_mqtt_topic_price, mqtt_topic_p, sizeof(s_mqtt_topic_price));
     strlcpy(s_mqtt_topic_relay, mqtt_topic_r, sizeof(s_mqtt_topic_relay));
+    s_lang = new_lang;
     mark_cheap_hours(s_hours, s_hour_count);   /* recompute with new cheap count */
     xSemaphoreGive(s_mutex);
+    display_set_lang(new_lang);
 
     /* Apply timezone immediately */
     setenv("TZ", s_tz_str, 1);
@@ -911,28 +969,36 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
              ntp_server, tz_str, mqtt_en, mqtt_host, mqtt_port,
              mqtt_topic_p, mqtt_topic_r);
 
-    send_page_head(req, "ElereRelay \xe2\x80\x94 Settings");
-    char chunk[768];
+    send_page_head(req, T("ElereRelay \xe2\x80\x94 Settings", "ElereRelay \xe2\x80\x94 Seaded"));
+    char chunk[896];
     snprintf(chunk, sizeof(chunk),
-        "<h1>Settings</h1>"
-        "<p>&#x2714; Saved &amp; applied.</p>"
+        "<h1>%s</h1>"
+        "<p>&#x2714; %s</p>"
         "<ul style='font-size:.9rem;line-height:1.8'>"
-        "<li>Window: <b>%d h</b></li>"
-        "<li>Cheap hours: <b>%d</b></li>"
-        "<li>Relay inverted: <b>%s</b></li>"
-        "<li>Price fetch at: <b>%02d:00</b> daily</li>"
-        "<li>Max rows: <b>%d</b></li>"
-        "<li>NTP server: <b>%s</b></li>"
-        "<li>Timezone: <b>%s</b></li>"
+        "<li>%s <b>%d h</b></li>"
+        "<li>%s <b>%d</b></li>"
+        "<li>%s <b>%s</b></li>"
+        "<li>%s <b>%02d:00</b></li>"
+        "<li>%s <b>%d</b></li>"
+        "<li>NTP: <b>%s</b></li>"
+        "<li>TZ: <b>%s</b></li>"
         "<li>MQTT: <b>%s</b>%s</li>"
         "</ul>"
-        "<p><a href='/settings'>Back to settings</a>"
-        " &nbsp; <a href='/'>Price table</a></p>"
+        "<p><a href='/settings'>%s</a>"
+        " &nbsp; <a href='/'>%s</a></p>"
         "</body></html>",
-        window, cheap, inv ? "yes" : "no", fetch_h, max_disp,
+        T("Settings", "Seaded"),
+        T("Saved &amp; applied.", "Salvestatud &amp; rakendatud."),
+        T("Window:", "Aken:"), window,
+        T("Cheap hours:", "Odavad tunnid:"), cheap,
+        T("Relay inverted:", "Relee p&ouml;&ouml;ratud:"), inv ? T("yes","jah") : T("no","ei"),
+        T("Fetch at:", "Laadimine:"), fetch_h,
+        T("Max rows:", "Maks ridu:"), max_disp,
         ntp_server, tz_str,
-        mqtt_en ? "enabled" : "disabled",
-        mqtt_en && mqtt_host[0] ? " — connecting..." : "");
+        mqtt_en ? T("enabled","lubatud") : T("disabled","keelatud"),
+        mqtt_en && mqtt_host[0] ? T(" \xe2\x80\x94 connecting...", " \xe2\x80\x94 \xc3\xbchendun...") : "",
+        T("Back to settings", "Tagasi seadetesse"),
+        T("Price table", "Hinnad"));
     httpd_resp_sendstr_chunk(req, chunk);
     httpd_resp_sendstr_chunk(req, NULL);
     return ESP_OK;
@@ -942,27 +1008,35 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
 static void send_wifi_form(httpd_req_t *req, bool is_ap)
 {
-    send_page_head(req, "ElereRelay \xe2\x80\x94 WiFi");
-    httpd_resp_sendstr_chunk(req, "<h1>&#x1F4F6; ");
-    httpd_resp_sendstr_chunk(req, is_ap ? "First Setup" : "WiFi Settings");
-    httpd_resp_sendstr_chunk(req, "</h1>");
-    if (is_ap) httpd_resp_sendstr_chunk(req,
-        "<p>Connect this device to your WiFi network.</p>");
-    httpd_resp_sendstr_chunk(req,
+    send_page_head(req, T("ElereRelay \xe2\x80\x94 WiFi", "ElereRelay \xe2\x80\x94 WiFi"));
+    char buf[768];
+    snprintf(buf, sizeof(buf),
+        "<h1>&#x1F4F6; %s</h1>%s"
         "<form method='POST' action='/wifi'>"
-        "<label>Network (SSID)"
-        "<input type='text' name='ssid' required maxlength='32'"
-               " placeholder='Network name'></label>"
-        "<label>Password"
-        "<input type='password' name='pass' maxlength='63'"
-               " placeholder='Leave blank for open network'></label>"
-        "<button type='submit'>Save &amp; Restart</button>"
+        "<label>%s<input type='text' name='ssid' required maxlength='32'"
+        " placeholder='%s'></label>"
+        "<label>%s<input type='password' name='pass' maxlength='63'"
+        " placeholder='%s'></label>"
+        "<button type='submit'>%s</button>"
         "</form>"
-        "<p class='note'>Device restarts and tries to connect."
-        " Returns to AP setup mode if it fails.</p>");
-    if (!is_ap)
-        httpd_resp_sendstr_chunk(req,
-            "<p><a href='/'>&#x2190; Back to price table</a></p>");
+        "<p class='note'>%s</p>",
+        is_ap ? T("First Setup", "Esmane seadistus") : T("WiFi Settings", "WiFi seaded"),
+        is_ap ? T("<p>Connect this device to your WiFi network.</p>",
+                  "<p>&#xDC;hendage seade WiFi v&otilde;rguga.</p>") : "",
+        T("Network (SSID)", "V&otilde;rk (SSID)"),
+        T("Network name", "V&otilde;rgu nimi"),
+        T("Password", "Parool"),
+        T("Leave blank for open network", "J&auml;ta t&uuml;hjaks avatud v&otilde;rgu puhul"),
+        T("Save &amp; Restart", "Salvesta &amp; Taask&auml;ivita"),
+        T("Device restarts and tries to connect. Returns to AP setup mode if it fails.",
+          "Seade taask&auml;ivitub ja proovib &uuml;henduda. Kui ei &otilde;nnestu, l&auml;heb AP-re&zcaron;iimi."));
+    httpd_resp_sendstr_chunk(req, buf);
+    if (!is_ap) {
+        char back[128];
+        snprintf(back, sizeof(back), "<p><a href='/'>&#x2190; %s</a></p>",
+                 T("Back to price table", "Tagasi hindade lehele"));
+        httpd_resp_sendstr_chunk(req, back);
+    }
     httpd_resp_sendstr_chunk(req, "</body></html>");
     httpd_resp_sendstr_chunk(req, NULL);
 }
@@ -992,23 +1066,31 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
     }
 
     esp_err_t err = nvs_save_creds(ssid, pass);
-    send_page_head(req, "ElereRelay \xe2\x80\x94 WiFi");
+    send_page_head(req, T("ElereRelay \xe2\x80\x94 WiFi", "ElereRelay \xe2\x80\x94 WiFi"));
     if (err == ESP_OK) {
         char safe[CRED_LEN * 6] = {0};
         html_escape(ssid, safe, sizeof(safe));
         char html[640];
         snprintf(html, sizeof(html),
-            "<h1>&#x2714; Saved!</h1>"
-            "<p>Connecting to <b>%s</b>... Restarting.</p>"
-            "<p class='note'>Returns to AP setup mode if connection fails.</p>"
-            "</body></html>", safe);
+            "<h1>&#x2714; %s</h1>"
+            "<p>%s <b>%s</b>... %s</p>"
+            "<p class='note'>%s</p>"
+            "</body></html>",
+            T("Saved!", "Salvestatud!"),
+            T("Connecting to", "&Uuml;hendan v&otilde;rguga"), safe,
+            T("Restarting.", "Taask&auml;ivitan."),
+            T("Returns to AP setup mode if connection fails.",
+              "L&auml;heb AP-re&zcaron;iimi, kui &uuml;hendus nurjub."));
         httpd_resp_sendstr_chunk(req, html);
         httpd_resp_sendstr_chunk(req, NULL);
         xTaskCreate(restart_task, "rst", 2048, NULL, 3, NULL);
     } else {
-        httpd_resp_sendstr_chunk(req,
-            "<h1>&#x274C; Error</h1><p>Failed to save credentials.</p>"
-            "</body></html>");
+        char errmsg[128];
+        snprintf(errmsg, sizeof(errmsg),
+            "<h1>&#x274C; %s</h1><p>%s</p></body></html>",
+            T("Error", "Viga"),
+            T("Failed to save credentials.", "Andmete salvestamine eba&otilde;nnestus."));
+        httpd_resp_sendstr_chunk(req, errmsg);
         httpd_resp_sendstr_chunk(req, NULL);
     }
     return ESP_OK;
@@ -1020,8 +1102,13 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 {
     char chunk[1024];
 
-    send_page_head(req, "Elering Smart Relay");
-    httpd_resp_sendstr_chunk(req, "<h1>&#x26A1; Elering Smart Relay</h1>");
+    send_page_head(req, T("Elering Smart Relay", "Elering Smart Relee"));
+    {
+        char h1[64];
+        snprintf(h1, sizeof(h1), "<h1>&#x26A1; %s</h1>",
+                 T("Elering Smart Relay", "Elering Smart Relee"));
+        httpd_resp_sendstr_chunk(req, h1);
+    }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     bool        relay_on   = s_relay_on;
@@ -1049,26 +1136,37 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     html_escape(s_wifi_ssid, safe_ssid, sizeof(safe_ssid));
 
     snprintf(chunk, sizeof(chunk),
-        "<p>Time: <b>%s</b></p>"
-        "<p>Relay: <span class='status %s'>%s</span>%s</p>"
+        "<p>%s <b>%s</b></p>"
+        "<p>%s <span class='status %s'>%s</span>%s</p>"
         "<p class='meta'>IP: %s &nbsp;|&nbsp; WiFi: %s"
-        " &nbsp;|&nbsp; Last fetch: %s"
-        " &nbsp;|&nbsp; Window: %dh, cheap: %dh, fetch: %02d:00</p>",
-        time_str,
-        relay_on ? "on" : "off", relay_on ? "ON" : "OFF",
-        inv ? " <span style='font-size:.8rem;color:#888'>(inverted)</span>" : "",
-        s_ip, safe_ssid, fetch_str,
-        s_hours_window, s_cheap_hours, s_fetch_hour);
+        " &nbsp;|&nbsp; %s %s"
+        " &nbsp;|&nbsp; %s %dh, %s %dh, %s %02d:00</p>",
+        T("Time:", "Aeg:"), time_str,
+        T("Relay:", "Relee:"), relay_on ? "on" : "off", relay_on ? "ON" : "OFF",
+        inv ? T(" <span style='font-size:.8rem;color:#888'>(inverted)</span>",
+                " <span style='font-size:.8rem;color:#888'>(p&ouml;&ouml;ratud)</span>") : "",
+        s_ip, safe_ssid,
+        T("Last fetch:", "Viimane p&auml;ring:"), fetch_str,
+        T("Window:", "Aken:"), s_hours_window,
+        T("cheap:", "odav:"), s_cheap_hours,
+        T("fetch:", "p&auml;ring:"), s_fetch_hour);
     httpd_resp_sendstr_chunk(req, chunk);
-    httpd_resp_sendstr_chunk(req,
-        "<form method='POST' action='/fetch' style='margin:10px 0'>"
-        "<button type='submit' style='width:auto;padding:7px 18px;"
-        "font-size:.9rem'>&#x21BB; Update prices now</button>"
-        "</form>");
+    {
+        char fbtn[256];
+        snprintf(fbtn, sizeof(fbtn),
+            "<form method='POST' action='/fetch' style='margin:10px 0'>"
+            "<button type='submit' style='width:auto;padding:7px 18px;"
+            "font-size:.9rem'>&#x21BB; %s</button></form>",
+            T("Update prices now", "Uuenda hinnad"));
+        httpd_resp_sendstr_chunk(req, fbtn);
+    }
 
     if (count == 0) {
-        httpd_resp_sendstr_chunk(req,
-            "<p><i>No price data yet &mdash; fetching&hellip;</i></p>");
+        char nomsg[128];
+        snprintf(nomsg, sizeof(nomsg), "<p><i>%s</i></p>",
+            T("No price data yet &mdash; fetching&hellip;",
+              "Hinna andmed puuduvad &mdash; laadin&hellip;"));
+        httpd_resp_sendstr_chunk(req, nomsg);
     } else {
         /* Skip 15-min slots that have already ended */
         int start = 0;
@@ -1077,9 +1175,12 @@ static esp_err_t web_get_handler(httpd_req_t *req)
         int show  = avail < max_disp ? avail : max_disp;
 
         snprintf(chunk, sizeof(chunk),
-            "<p class='meta'>Showing %d of %d future/current × 15-min slots.</p>"
-            "<table><tr><th>Time (local)</th><th>Price (c/kWh)</th>"
-            "<th>Relay</th></tr>", show, avail);
+            "<p class='meta'>%s %d / %d &times; 15min.</p>"
+            "<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>",
+            T("Showing", "N&auml;itan"), show, avail,
+            T("Time (local)", "Aeg (kohalik)"),
+            T("Price (c/kWh)", "Hind (s/kWh)"),
+            T("Relay", "Relee"));
         httpd_resp_sendstr_chunk(req, chunk);
 
         time_t cur_hour = (now / 3600) * 3600;
@@ -1095,8 +1196,8 @@ static esp_err_t web_get_handler(httpd_req_t *req)
                 char ws_str[20]; strftime(ws_str, sizeof(ws_str), "%Y-%m-%d %H:%M", &tws);
                 snprintf(chunk, sizeof(chunk),
                     "<tr class='win-sep'><td colspan='3'>"
-                    "&#x1F5D3; Window %d &mdash; %s</td></tr>",
-                    this_win + 1, ws_str);
+                    "&#x1F5D3; %s %d &mdash; %s</td></tr>",
+                    T("Window", "Aken"), this_win + 1, ws_str);
                 httpd_resp_sendstr_chunk(req, chunk);
             }
 
@@ -1490,6 +1591,7 @@ void app_main(void)
 
     /* Load runtime settings (before anything that uses them) */
     nvs_load_settings();
+    display_set_lang(s_lang);
     ESP_LOGI(TAG, "Settings: window=%d cheap=%d inv=%d fetch_h=%d max_disp=%d "
              "ntp=%s tz=%s mqtt=%d host=%s port=%d",
              s_hours_window, s_cheap_hours, s_relay_inv, s_fetch_hour, s_max_display,
