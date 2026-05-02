@@ -36,16 +36,18 @@ static const char *TAG = "touch";
 #define LCD_H     240
 #define LCD_HOST  SPI2_HOST
 
-/* ── ILI9341 command codes ──────────────────────────────────────────────── */
+/* ── Display command codes (shared subset) ──────────────────────────────── */
 #define ILI_SWRESET  0x01
 #define ILI_SLPOUT   0x11
 #define ILI_INVOFF   0x20
+#define ILI_INVON    0x21
 #define ILI_DISPON   0x29
 #define ILI_CASET    0x2A
 #define ILI_RASET    0x2B
 #define ILI_RAMWR    0x2C
 #define ILI_MADCTL   0x36
 #define ILI_COLMOD   0x3A
+/* ILI9341-only */
 #define ILI_FRMCTR1  0xB1
 #define ILI_DFUNCTR  0xB6
 #define ILI_PWCTR1   0xC0
@@ -56,15 +58,24 @@ static const char *TAG = "touch";
 #define ILI_GMCTRN1  0xE1
 
 /*
- * MADCTL for landscape 320×240 on ESP-2432S028:
- *   MV=1 (bit5) — swap row/column → landscape
+ * ILI9341 MADCTL for landscape 320×240:
+ *   MV=1 (bit5) — swap row/col → landscape
  *   BGR=1 (bit3) — ILI9341 native color order
- * Other orientations to try if display is wrong:
- *   0x68 (MX=1, MV=1, BGR=1) — X-mirrored landscape
- *   0xA8 (MY=1, MV=1, BGR=1) — Y-mirrored landscape
- *   0xE8 (MY=1, MX=1, MV=1, BGR=1) — 180° rotated landscape
+ * Alternatives: 0x68 (X-mirror), 0xA8 (Y-mirror), 0xE8 (180°)
+ *
+ * ST7789 MADCTL for landscape 320×240:
+ *   MX=1 (bit6), MV=1 (bit5) — X-mirror + swap → landscape
+ *   No BGR bit — ST7789 is RGB-native
+ * Alternatives: 0x20 (no mirror), 0xA0 (Y-mirror), 0xC0 (180°)
  */
-#define LCD_MADCTL   0x28
+#define ILI9341_MADCTL  0x28
+#define ST7789_MADCTL   0x60
+
+#ifdef CONFIG_LCD_ST7789
+#define LCD_MADCTL  ST7789_MADCTL
+#else
+#define LCD_MADCTL  ILI9341_MADCTL
+#endif
 
 /* ── RGB565 colour palette ──────────────────────────────────────────────── */
 #define C_BLACK   0x0000u
@@ -402,6 +413,30 @@ static void ili9341_init(void)
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
+/* ── ST7789 initialisation sequence ────────────────────────────────────── */
+static void st7789_init(void)
+{
+    if (LCD_RST >= 0) {
+        gpio_set_direction(LCD_RST, GPIO_MODE_OUTPUT);
+        gpio_set_level(LCD_RST, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(LCD_RST, 1);
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
+
+    ili_cmd(ILI_SWRESET, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    ili_cmd(ILI_SLPOUT, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    ili_cmd(ILI_COLMOD, (uint8_t[]){0x55}, 1);          /* 16bpp RGB565 */
+    ili_cmd(ILI_MADCTL, (uint8_t[]){LCD_MADCTL}, 1);
+    ili_cmd(ILI_INVOFF, NULL, 0);
+    ili_cmd(ILI_DISPON, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
 void display_init(void)
@@ -433,7 +468,11 @@ void display_init(void)
     };
     esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &s_io);
 
+#ifdef CONFIG_LCD_ST7789
+    st7789_init();
+#else
     ili9341_init();
+#endif
 
     /* Clear to black, stripe by stripe */
     memset(s_fb, 0, sizeof(s_fb));

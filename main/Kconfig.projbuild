@@ -39,4 +39,11 @@ menu "Elering Smart Relay"
         help
             How many of the cheapest hours in the window the relay should be ON.
 
+    config LCD_ST7789
+        bool "Use ST7789 display driver (some CYD variants)"
+        default n
+        help
+            Enable for CYD boards with an ST7789 display instead of the default ILI9341.
+            Symptoms of wrong driver: blank/white screen or washed-out colours.
+
 endmenu
