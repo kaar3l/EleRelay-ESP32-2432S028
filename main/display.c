@@ -68,8 +68,8 @@ static const char *TAG = "touch";
  *   No BGR bit — ST7789 is RGB-native
  * Alternatives: 0x20 (no mirror), 0xA0 (Y-mirror), 0xC0 (180°)
  */
-#define ILI9341_MADCTL  0x28
-#define ST7789_MADCTL   0x60
+#define ILI9341_MADCTL  0x60
+#define ST7789_MADCTL   0x20
 
 #ifdef CONFIG_LCD_ST7789
 #define LCD_MADCTL  ST7789_MADCTL
@@ -78,19 +78,20 @@ static const char *TAG = "touch";
 #endif
 
 /* ── RGB565 colour palette ──────────────────────────────────────────────── */
+/* R and B channels are pre-swapped to match this panel's physical subpixel order */
 #define C_BLACK   0x0000u
 #define C_WHITE   0xFFFFu
 #define C_GREEN   0x07E0u
 #define C_DKGREEN 0x03E0u
-#define C_RED     0xF800u
-#define C_DKRED   0x7800u
-#define C_BLUE    0x001Fu
-#define C_NAVY    0x000Fu
-#define C_YELLOW  0xFFE0u
-#define C_ORANGE  0xFD20u
-#define C_GRAY    0x7BEFu
-#define C_DKGRAY  0x39E7u
-#define C_CYAN    0x07FFu
+#define C_RED     0x001Fu   /* R↔B: was 0xF800 */
+#define C_DKRED   0x000Fu   /* R↔B: was 0x7800 */
+#define C_BLUE    0xF800u   /* R↔B: was 0x001F */
+#define C_NAVY    0x7800u   /* R↔B: was 0x000F */
+#define C_YELLOW  0x07FFu   /* R↔B: was 0xFFE0 */
+#define C_ORANGE  0x053Fu   /* R↔B: was 0xFD20 */
+#define C_GRAY    0x7BEFu   /* R=B, unchanged */
+#define C_DKGRAY  0x39E7u   /* R=B, unchanged */
+#define C_CYAN    0xFFE0u   /* R↔B: was 0x07FF */
 
 /* ── 8×8 bitmap font (ASCII 32–126) ─────────────────────────────────────── */
 /* Each character is 8 bytes, one per row, MSB = leftmost pixel. */
@@ -191,6 +192,49 @@ static const uint8_t font8x8[95][8] = {
     {0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00}, /* 125 '}' */
     {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00}, /* 126 '~' */
 };
+
+/* ── 16×16 font: Scale2x upscale of font8x8, built at init ──────────────── */
+/* 16 rows × 2 bytes per row; bit 15 of uint16 = leftmost pixel */
+static uint8_t font16x16[95][32];
+
+static void build_font16x16(void)
+{
+    for (int g = 0; g < 95; g++) {
+        const uint8_t *src = font8x8[g];
+        uint8_t *dst = font16x16[g];
+        memset(dst, 0, 32);
+        for (int row = 0; row < 8; row++) {
+            for (int col = 0; col < 8; col++) {
+                int E = (src[row]              >> col)       & 1;
+                int B = (row > 0) ? (src[row-1] >> col)       & 1 : 0;
+                int H = (row < 7) ? (src[row+1] >> col)       & 1 : 0;
+                int D = (col > 0) ? (src[row]   >> (col - 1)) & 1 : 0;
+                int F = (col < 7) ? (src[row]   >> (col + 1)) & 1 : 0;
+
+                int tl, tr, bl, br;
+                if (B != H && D != F) {
+                    tl = (D == B) ? B : E;
+                    tr = (B == F) ? F : E;
+                    bl = (D == H) ? D : E;
+                    br = (H == F) ? H : E;
+                } else {
+                    tl = tr = bl = br = E;
+                }
+
+                int out[2][2] = {{tl, tr}, {bl, br}};
+                for (int dr = 0; dr < 2; dr++) {
+                    for (int dc = 0; dc < 2; dc++) {
+                        if (out[dr][dc]) {
+                            int drow = row * 2 + dr;
+                            int dcol = col * 2 + dc;
+                            dst[drow * 2 + dcol / 8] |= (uint8_t)(1 << (7 - dcol % 8));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /* ── Globals ────────────────────────────────────────────────────────────── */
 static esp_lcd_panel_io_handle_t s_io = NULL;
@@ -343,6 +387,38 @@ static void draw_str(int x, int y, const char *s, uint16_t fg, uint16_t bg, int 
     }
 }
 
+static void draw_char_16(int x, int y, char ch, uint16_t fg, uint16_t bg, int scale)
+{
+    if (ch < 32 || ch > 126) ch = '?';
+    const uint8_t *glyph = font16x16[ch - 32];
+    uint16_t sfg = swap16(fg), sbg = swap16(bg);
+    for (int row = 0; row < 16; row++) {
+        uint16_t bits = ((uint16_t)glyph[row * 2] << 8) | glyph[row * 2 + 1];
+        for (int col = 0; col < 16; col++) {
+            uint16_t c = (bits & (0x8000u >> col)) ? sfg : sbg;
+            for (int sy = 0; sy < scale; sy++) {
+                int py = y + row * scale + sy;
+                int srow = py - s_sy0;
+                if (srow < 0 || srow >= STRIPE_H) continue;
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x + col * scale + sx;
+                    if (px >= 0 && px < LCD_W)
+                        s_fb[srow * LCD_W + px] = c;
+                }
+            }
+        }
+    }
+}
+
+static void draw_str_16(int x, int y, const char *s, uint16_t fg, uint16_t bg, int scale)
+{
+    while (*s) {
+        draw_char_16(x, y, *s++, fg, bg, scale);
+        x += 16 * scale;
+        if (x + 16 * scale > LCD_W) break;
+    }
+}
+
 /* ── Flush current stripe (s_sy0 .. s_sy0+rows-1) to display ───────────── */
 static void flush_stripe(int rows)
 {
@@ -408,7 +484,7 @@ static void ili9341_init(void)
         0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F
     }, 15);
 
-    ili_cmd(ILI_INVOFF, NULL, 0);  /* No inversion for ILI9341 on CYD */
+    ili_cmd(ILI_INVOFF, NULL, 0);
     ili_cmd(ILI_DISPON, NULL, 0);
     vTaskDelay(pdMS_TO_TICKS(100));
 }
@@ -473,6 +549,8 @@ void display_init(void)
 #else
     ili9341_init();
 #endif
+
+    build_font16x16();
 
     /* Clear to black, stripe by stripe */
     memset(s_fb, 0, sizeof(s_fb));
@@ -560,7 +638,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     const char *relay_str = relay_on ? "ON " : "OFF";
     uint16_t relay_col    = relay_on ? C_GREEN : C_RED;
     draw_str(4, 28, DT("RELAY", "RELEE"), C_GRAY, C_BLACK, 2);
-    draw_str(4, 52, relay_str, relay_col, C_BLACK, 4);  /* 32 px tall */
+    draw_str_16(4, 52, relay_str, relay_col, C_BLACK, 2);  /* 32 px tall */
 
     /* ── Current price (right half of relay area) ────────────────────── */
     if (count > 0 && cur_idx >= 0 && cur_idx < count) {
@@ -570,8 +648,8 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         snprintf(pbuf, sizeof(pbuf), "%.1fc", price_c);
         uint16_t pc = cur->is_cheap ? C_GREEN : C_RED;
         draw_str(176, 28, cur->is_cheap ? DT("CHEAP","ODAV") : DT("EXPNS","KALLIS"), pc, C_BLACK, 2);
-        draw_str(176, 52, pbuf, C_WHITE, C_BLACK, 3);
-        draw_str(176, 84, "/kWh", C_GRAY, C_BLACK, 1);
+        draw_str_16(176, 52, pbuf, C_WHITE, C_BLACK, 2);  /* 32 px tall */
+        draw_str(176, 86, "/kWh", C_GRAY, C_BLACK, 1);
     }
 
     /* ── WiFi / AP info + window (y 102..121) ───────────────────────────── */
@@ -675,9 +753,9 @@ static void render_config_page(int cheap_hours, int hours_window)
     char vbuf[8];
     snprintf(vbuf, sizeof(vbuf), "%dh", hours_window);
     {
-        int vw = (int)strlen(vbuf) * 24;  /* scale 3 */
+        int vw = (int)strlen(vbuf) * 32;  /* 16×16 scale 2 */
         int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str(vx, CFG_WIN_Y + 6, vbuf, C_WHITE, C_BLACK, 3);
+        draw_str_16(vx, CFG_WIN_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
     }
 
     /* Cheap hours row */
@@ -686,9 +764,9 @@ static void render_config_page(int cheap_hours, int hours_window)
     draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
     {
-        int vw = (int)strlen(vbuf) * 24;
+        int vw = (int)strlen(vbuf) * 32;  /* 16×16 scale 2 */
         int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str(vx, CFG_CHE_Y + 6, vbuf, C_WHITE, C_BLACK, 3);
+        draw_str_16(vx, CFG_CHE_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
     }
 
     draw_str(4, 157, DT("cheap < window", "odav < aken"), C_DKGRAY, C_BLACK, 1);
