@@ -82,9 +82,9 @@ static const char *TAG = "touch";
 #define C_BLACK   0x0000u
 #define C_WHITE   0xFFFFu
 #define C_GREEN   0x07E0u
-#define C_DKGREEN 0x03E0u
+#define C_DKGREEN 0x05E0u   /* G=47/63, ~75% */
 #define C_RED     0x001Fu   /* R↔B: was 0xF800 */
-#define C_DKRED   0x000Fu   /* R↔B: was 0x7800 */
+#define C_DKRED   0x0017u   /* R↔B, ~75%: was 0x000F */
 #define C_BLUE    0xF800u   /* R↔B: was 0x001F */
 #define C_NAVY    0x7800u   /* R↔B: was 0x000F */
 #define C_YELLOW  0x07FFu   /* R↔B: was 0xFFE0 */
