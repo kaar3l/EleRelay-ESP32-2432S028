@@ -78,6 +78,7 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_MQTT_TPRC "mqtt_topic_p"
 #define NVS_KEY_MQTT_TRLY "mqtt_topic_r"
 #define NVS_KEY_LANG      "lang"
+#define NVS_KEY_MIN_RUN   "min_run_min"
 
 /* Picks between English and Estonian at runtime */
 #define T(en, et) (s_lang == LANG_ET ? (et) : (en))
@@ -87,12 +88,13 @@ static const char *TAG = "elerelay";
 
 /* ── Runtime settings (loaded from NVS, defaults from Kconfig) ───────────── */
 
-static int  s_hours_window = CONFIG_HOURS_WINDOW;  /* 2-24               */
-static int  s_cheap_hours  = CONFIG_CHEAP_HOURS;   /* 1 .. window-1      */
-static int  s_lang         = LANG_EN;              /* LANG_EN / LANG_ET  */
-static bool s_relay_inv    = false;                /* invert relay logic */
-static int  s_fetch_hour   = 23;                   /* 0-23               */
-static int  s_max_display  = 48;                   /* max rows in table  */
+static int  s_hours_window    = CONFIG_HOURS_WINDOW;    /* 2-24               */
+static int  s_cheap_hours     = CONFIG_CHEAP_HOURS;     /* 1 .. window-1      */
+static int  s_lang            = LANG_EN;                /* LANG_EN / LANG_ET  */
+static bool s_relay_inv       = false;                  /* invert relay logic */
+static int  s_fetch_hour      = 23;                     /* 0-23               */
+static int  s_max_display     = 48;                     /* max rows in table  */
+static int  s_min_run_minutes = CONFIG_MIN_RUN_MINUTES; /* 0 = disabled       */
 
 static char s_ntp_server[STR_LEN]       = "pool.ntp.org";
 static char s_tz_str[STR_LEN]           = "EET-2EEST,M3.5.0/3,M10.5.0/4";
@@ -119,9 +121,11 @@ static int s_retry_num = 0;
 
 static SemaphoreHandle_t s_mutex;
 static hour_slot_t       s_hours[MAX_SLOTS];
-static int               s_hour_count = 0;
-static bool              s_relay_on   = false;
-static time_t            s_last_fetch = 0;
+static int               s_hour_count    = 0;
+static bool              s_relay_on      = false;
+static time_t            s_relay_on_since = 0;  /* when relay last turned ON, 0 if OFF */
+static time_t            s_last_fetch    = 0;
+static time_t            s_last_slot_ts  = 0;  /* end of last fetched slot (ts + 900) */
 static char              s_ip[20]     = "?.?.?.?";
 static bool              s_ap_mode    = false;
 static char              s_wifi_ssid[CRED_LEN] = {0};
@@ -134,8 +138,9 @@ static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 /* ── Touch / screen state ────────────────────────────────────────────────── */
 typedef enum { SCREEN_MAIN, SCREEN_CONFIG } screen_t;
 static volatile screen_t s_screen    = SCREEN_MAIN;
-static int               s_cfg_window = 0;
-static int               s_cfg_cheap  = 0;
+static int               s_cfg_window   = 0;
+static int               s_cfg_cheap    = 0;
+static int               s_cfg_min_run  = 0;
 
 /* ── NVS: WiFi credentials ───────────────────────────────────────────────── */
 
@@ -182,6 +187,9 @@ static void nvs_load_settings(void)
     uint16_t port;
     if (nvs_get_u16(h, NVS_KEY_MQTT_PORT, &port) == ESP_OK) s_mqtt_port = port;
 
+    uint16_t mrm;
+    if (nvs_get_u16(h, NVS_KEY_MIN_RUN, &mrm) == ESP_OK) s_min_run_minutes = mrm;
+
     size_t len;
     len = STR_LEN; nvs_get_str(h, NVS_KEY_NTP_SRV,  s_ntp_server,       &len);
     len = STR_LEN; nvs_get_str(h, NVS_KEY_TZ,        s_tz_str,           &len);
@@ -205,6 +213,7 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_MQTT_EN,   (uint8_t)s_mqtt_enabled);
     err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
+    err |= nvs_set_u16(h, NVS_KEY_MIN_RUN,   (uint16_t)s_min_run_minutes);
     err |= nvs_set_str(h, NVS_KEY_NTP_SRV,   s_ntp_server);
     err |= nvs_set_str(h, NVS_KEY_TZ,        s_tz_str);
     err |= nvs_set_str(h, NVS_KEY_MQTT_HOST, s_mqtt_host);
@@ -421,14 +430,19 @@ static int cmp_price_asc(const void *a, const void *b)
 }
 
 /* Mark the cheapest slots as cheap=true, independently per hours-window.
- * With a 4h window and 2h cheap setting, exactly 50% of each window is marked. */
-static void mark_cheap_hours(hour_slot_t *slots, int count)
+ *
+ * Without min_run: picks the cheapest cheap_n individual 15-min slots.
+ * With min_run:    picks contiguous blocks of blk=ceil(min_run/15) slots so the
+ *                  relay never activates for less than min_run minutes.
+ *                  Number of blocks = max(1, cheap_n / blk). */
+static void mark_cheap_hours(hour_slot_t *slots, int count, int min_run_minutes)
 {
     if (count == 0) return;
     for (int i = 0; i < count; i++) slots[i].cheap = false;
 
-    int    cheap_n   = s_cheap_hours * 4;   /* cheap 15-min slots per window */
+    int    cheap_n   = s_cheap_hours * 4;
     int    win_secs  = (s_hours_window > 0 ? s_hours_window : 1) * 3600;
+    int    blk       = (min_run_minutes > 15) ? (min_run_minutes + 14) / 15 : 0;
     time_t base      = slots[0].ts;
 
     int i = 0;
@@ -439,18 +453,45 @@ static void mark_cheap_hours(hour_slot_t *slots, int count)
         while (j < count && (int)((slots[j].ts - base) / win_secs) == wn) j++;
         int wlen = j - i;
 
-        /* Sort indices of this window's slots by price (insertion sort) */
-        int idx[MAX_SLOTS];
-        for (int k = 0; k < wlen; k++) idx[k] = i + k;
-        for (int a = 1; a < wlen; a++) {
-            int key = idx[a], b = a - 1;
-            while (b >= 0 && slots[idx[b]].price > slots[key].price)
-                { idx[b+1] = idx[b]; b--; }
-            idx[b+1] = key;
-        }
+        if (blk > 1 && blk <= wlen) {
+            /* Block mode: greedily pick cheapest non-overlapping runs of blk slots */
+            int n_blocks = cheap_n / blk;
+            if (n_blocks < 1) n_blocks = 1;
 
-        int n = wlen < cheap_n ? wlen : cheap_n;
-        for (int k = 0; k < n; k++) slots[idx[k]].cheap = true;
+            bool used[MAX_SLOTS];
+            memset(used, 0, sizeof(bool) * wlen);
+
+            for (int b = 0; b < n_blocks; b++) {
+                float best_sum = 1e18f;
+                int   best_s   = -1;
+                for (int s = i; s + blk <= j; s++) {
+                    bool overlap = false;
+                    for (int k = 0; k < blk; k++)
+                        if (used[s - i + k]) { overlap = true; break; }
+                    if (overlap) continue;
+                    float sum = 0;
+                    for (int k = 0; k < blk; k++) sum += slots[s + k].price;
+                    if (sum < best_sum) { best_sum = sum; best_s = s; }
+                }
+                if (best_s < 0) break;
+                for (int k = 0; k < blk; k++) {
+                    slots[best_s + k].cheap = true;
+                    used[best_s - i + k]    = true;
+                }
+            }
+        } else {
+            /* Original: mark cheapest cheap_n individual slots (insertion sort) */
+            int idx[MAX_SLOTS];
+            for (int k = 0; k < wlen; k++) idx[k] = i + k;
+            for (int a = 1; a < wlen; a++) {
+                int key = idx[a], b = a - 1;
+                while (b >= 0 && slots[idx[b]].price > slots[key].price)
+                    { idx[b+1] = idx[b]; b--; }
+                idx[b+1] = key;
+            }
+            int n = wlen < cheap_n ? wlen : cheap_n;
+            for (int k = 0; k < n; k++) slots[idx[k]].cheap = true;
+        }
 
         i = j;
     }
@@ -534,8 +575,9 @@ static esp_err_t fetch_prices(void)
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_hour_count = nraw;
     memcpy(s_hours, raw, nraw * sizeof(hour_slot_t));
-    mark_cheap_hours(s_hours, s_hour_count);
-    s_last_fetch = now;
+    mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);
+    s_last_fetch   = now;
+    s_last_slot_ts = (nraw > 0) ? raw[nraw - 1].ts + 900 : 0;
     xSemaphoreGive(s_mutex);
 
     ESP_LOGI(TAG, "Parsed %d × 15-min slots", s_hour_count);
@@ -543,6 +585,8 @@ static esp_err_t fetch_prices(void)
 }
 
 static void update_display(void);   /* forward declaration */
+static void compute_effective_relay_states(const hour_slot_t *, int, bool, int,
+                                           bool, time_t, bool *); /* forward */
 
 /* ── Relay ───────────────────────────────────────────────────────────────── */
 
@@ -564,6 +608,18 @@ static void update_relay(void)
         }
     }
     bool on = is_cheap ^ s_relay_inv;   /* invert flips cheap↔expensive */
+
+    /* Enforce minimum continuous run time: once ON, stay ON for s_min_run_minutes */
+    if (!on && s_min_run_minutes > 0 && s_relay_on && s_relay_on_since > 0) {
+        if (now - s_relay_on_since < (time_t)s_min_run_minutes * 60)
+            on = true;
+    }
+    /* Track when relay transitions to ON */
+    if (on && !s_relay_on)
+        s_relay_on_since = now;
+    else if (!on)
+        s_relay_on_since = 0;
+
     s_relay_on = on;
     xSemaphoreGive(s_mutex);
 
@@ -694,16 +750,32 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     }
     httpd_resp_sendstr_chunk(req, "</select></label>");
 
-    /* Cheap hours number */
+    /* Cheap hours dropdown */
+    snprintf(chunk, sizeof(chunk), "<label>%s<select name='cheap'>",
+             T("Cheap hours", "Odavad tunnid"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    for (int i = 1; i < s_hours_window; i++) {
+        snprintf(chunk, sizeof(chunk), "<option value='%d'%s>%d %s</option>",
+                 i, i == s_cheap_hours ? " selected" : "", i, T("hours", "tundi"));
+        httpd_resp_sendstr_chunk(req, chunk);
+    }
+    httpd_resp_sendstr_chunk(req, "</select></label>");
+
+    /* Minimum continuous run minutes */
     {
-        char buf[256];
+        char buf[600];
         snprintf(buf, sizeof(buf),
             "<label>%s"
-            "<input type='number' name='cheap' min='1' max='23' value='%d'>"
-            "</label>",
-            T("Cheap hours (N&times;4 cheapest 15-min slots = ON)",
-              "Odavad tunnid (N&times;4 odavamat 15-min perioodi = SEES)"),
-            s_cheap_hours);
+            "<input type='number' name='min_run' min='0' max='480' value='%d'>"
+            "</label>"
+            "<p class='note'>%s</p>",
+            T("Minimum continuous run (minutes, 0 = disabled)",
+              "Minimaalne j&auml;rjestikune k&auml;itusaeg (minutit, 0 = v&auml;lja l&uuml;litatud)"),
+            s_min_run_minutes,
+            T("Once the relay turns ON it stays ON for at least this many minutes."
+              " Useful for devices that need a full run cycle (e.g. 60 min = 1 hour).",
+              "Kui relee l&auml;heb SISSE, j&auml;&auml;b see sisselülitatuks v&auml;hemalt nii kauaks."
+              " Kasulik seadmetele, mis vajavad t&auml;ielikku t&ouml;&ouml;tsüklit (nt 60 min = 1 tund)."));
         httpd_resp_sendstr_chunk(req, buf);
     }
 
@@ -905,6 +977,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "max_disp", val, sizeof(val));
     int max_disp = clamp(atoi(val), 1, MAX_SLOTS);
 
+    form_field(body, "min_run", val, sizeof(val));
+    int min_run = clamp(atoi(val), 0, 480);
+
     /* Time settings */
     char ntp_server[STR_LEN] = {0};
     form_field(body, "ntp_server", ntp_server, sizeof(ntp_server));
@@ -941,7 +1016,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     s_cheap_hours  = cheap;
     s_relay_inv    = inv;
     s_fetch_hour   = fetch_h;
-    s_max_display  = max_disp;
+    s_max_display     = max_disp;
+    s_min_run_minutes = min_run;
     strlcpy(s_ntp_server,       ntp_server,  sizeof(s_ntp_server));
     strlcpy(s_tz_str,           tz_str,      sizeof(s_tz_str));
     s_mqtt_enabled = mqtt_en;
@@ -950,7 +1026,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     strlcpy(s_mqtt_topic_price, mqtt_topic_p, sizeof(s_mqtt_topic_price));
     strlcpy(s_mqtt_topic_relay, mqtt_topic_r, sizeof(s_mqtt_topic_relay));
     s_lang = new_lang;
-    mark_cheap_hours(s_hours, s_hour_count);   /* recompute with new cheap count */
+    mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);   /* recompute with new cheap count */
     xSemaphoreGive(s_mutex);
     display_set_lang(new_lang);
 
@@ -964,19 +1040,20 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     mqtt_start();            /* restart MQTT client with new settings */
 
     ESP_LOGI(TAG, "Settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
-             "max_disp=%d ntp=%s tz=%s mqtt=%d host=%s port=%d tp=%s tr=%s",
-             window, cheap, inv, fetch_h, max_disp,
+             "max_disp=%d min_run=%d ntp=%s tz=%s mqtt=%d host=%s port=%d tp=%s tr=%s",
+             window, cheap, inv, fetch_h, max_disp, min_run,
              ntp_server, tz_str, mqtt_en, mqtt_host, mqtt_port,
              mqtt_topic_p, mqtt_topic_r);
 
     send_page_head(req, T("ElereRelay \xe2\x80\x94 Settings", "ElereRelay \xe2\x80\x94 Seaded"));
-    char chunk[896];
+    char chunk[1024];
     snprintf(chunk, sizeof(chunk),
         "<h1>%s</h1>"
         "<p>&#x2714; %s</p>"
         "<ul style='font-size:.9rem;line-height:1.8'>"
         "<li>%s <b>%d h</b></li>"
         "<li>%s <b>%d</b></li>"
+        "<li>%s <b>%d min</b></li>"
         "<li>%s <b>%s</b></li>"
         "<li>%s <b>%02d:00</b></li>"
         "<li>%s <b>%d</b></li>"
@@ -991,6 +1068,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         T("Saved &amp; applied.", "Salvestatud &amp; rakendatud."),
         T("Window:", "Aken:"), window,
         T("Cheap hours:", "Odavad tunnid:"), cheap,
+        T("Min. continuous run:", "Min. j&auml;rjestikune k&auml;itus:"), min_run,
         T("Relay inverted:", "Relee p&ouml;&ouml;ratud:"), inv ? T("yes","jah") : T("no","ei"),
         T("Fetch at:", "Laadimine:"), fetch_h,
         T("Max rows:", "Maks ridu:"), max_disp,
@@ -1111,12 +1189,14 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    bool        relay_on   = s_relay_on;
-    int         count      = s_hour_count;
-    time_t      last_fetch = s_last_fetch;
-    bool        inv        = s_relay_inv;
-    int         max_disp   = s_max_display;
-    int         win_hours  = s_hours_window;
+    bool        relay_on       = s_relay_on;
+    time_t      relay_on_since = s_relay_on_since;
+    int         count          = s_hour_count;
+    time_t      last_fetch     = s_last_fetch;
+    bool        inv            = s_relay_inv;
+    int         max_disp       = s_max_display;
+    int         win_hours      = s_hours_window;
+    int         min_run        = s_min_run_minutes;
     hour_slot_t local[MAX_SLOTS];
     memcpy(local, s_hours, count * sizeof(hour_slot_t));
     xSemaphoreGive(s_mutex);
@@ -1125,6 +1205,21 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     time(&now); localtime_r(&now, &ti);
     char time_str[32], fetch_str[32];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &ti);
+
+    /* Find first non-expired slot — simulate from there with actual relay state.
+     * Starting simulation from slot 0 with current state corrupts relay_on_since
+     * for past slots and produces wrong forced-ON predictions. */
+    bool eff_on[MAX_SLOTS];
+    {
+        int sim_start = 0;
+        while (sim_start < count && local[sim_start].ts + 900 <= now) sim_start++;
+        for (int i = 0; i < sim_start; i++)
+            eff_on[i] = local[i].cheap ^ inv;   /* past slots: price-only, not shown */
+        if (sim_start < count)
+            compute_effective_relay_states(local + sim_start, count - sim_start,
+                                           inv, min_run, relay_on, relay_on_since,
+                                           eff_on + sim_start);
+    }
     if (last_fetch) {
         struct tm tf; localtime_r(&last_fetch, &tf);
         strftime(fetch_str, sizeof(fetch_str), "%H:%M:%S", &tf);
@@ -1203,16 +1298,15 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 
             struct tm th; localtime_r(&local[i].ts, &th);
             char hr[20]; strftime(hr, sizeof(hr), "%Y-%m-%d %H:%M", &th);
-            bool is_cur   = (local[i].ts == cur_hour);
-            bool is_cheap = local[i].cheap;
-            bool ron      = is_cheap ^ inv;        /* physical relay state */
+            bool is_cur = (local[i].ts == cur_hour);
+            bool ron    = eff_on[i];   /* effective relay state (min-run aware) */
             float cprice  = local[i].price / 10.0f;
             int this_h = (int)(local[i].ts / 3600);
             int prev_h = (i > start)            ? (int)(local[i-1].ts / 3600) : -1;
             int next_h = (i < start + show - 1) ? (int)(local[i+1].ts / 3600) : -1;
             char row_cls[64];
             snprintf(row_cls, sizeof(row_cls), "hg %s%s%s%s",
-                is_cheap ? "cheap" : "exp",
+                ron ? "cheap" : "exp",
                 is_cur ? " cur" : "",
                 prev_h != this_h ? " hs" : "",
                 next_h != this_h ? " he" : "");
@@ -1443,6 +1537,36 @@ static httpd_handle_t start_webserver(void)
     return srv;
 }
 
+/* ── Effective relay state simulation ───────────────────────────────────── */
+
+/* Simulate the min-run logic across slots[0..count-1].
+ * init_relay_on / init_relay_on_since: actual relay state just before slots[0].
+ * out_relay_on[i] = true if relay will be ON during slots[i]. */
+static void compute_effective_relay_states(
+    const hour_slot_t *slots, int count,
+    bool inv, int min_run_minutes,
+    bool init_relay_on, time_t init_relay_on_since,
+    bool *out_relay_on)
+{
+    bool   relay_on       = init_relay_on;
+    time_t relay_on_since = init_relay_on_since;
+
+    for (int i = 0; i < count; i++) {
+        bool want_on = slots[i].cheap ^ inv;
+        bool on      = want_on;
+        if (!on && min_run_minutes > 0 && relay_on && relay_on_since > 0) {
+            if (slots[i].ts - relay_on_since < (time_t)min_run_minutes * 60)
+                on = true;
+        }
+        if (on && !relay_on)
+            relay_on_since = slots[i].ts;
+        else if (!on)
+            relay_on_since = 0;
+        relay_on     = on;
+        out_relay_on[i] = on;
+    }
+}
+
 /* ── Display update ──────────────────────────────────────────────────────── */
 
 static void update_display(void)
@@ -1452,9 +1576,12 @@ static void update_display(void)
     time_t cur_slot = (now / 900) * 900;
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    bool relay_on  = s_relay_on;
-    bool ap_mode   = s_ap_mode;
-    int  count     = s_hour_count;
+    bool   relay_on       = s_relay_on;
+    time_t relay_on_since = s_relay_on_since;
+    bool   inv            = s_relay_inv;
+    int    min_run        = s_min_run_minutes;
+    bool   ap_mode        = s_ap_mode;
+    int    count          = s_hour_count;
     hour_slot_t local[MAX_SLOTS];
     memcpy(local, s_hours, count * sizeof(hour_slot_t));
     xSemaphoreGive(s_mutex);
@@ -1465,12 +1592,23 @@ static void update_display(void)
         if (local[i].ts == cur_slot) { cur_idx = i; break; }
     }
 
+    /* Compute effective relay state from cur_idx using actual relay state.
+     * Past slots (before cur_idx) are not shown — fill with price-only. */
+    bool eff_on[MAX_SLOTS];
+    for (int i = 0; i < cur_idx; i++)
+        eff_on[i] = local[i].cheap ^ inv;
+    if (cur_idx < count)
+        compute_effective_relay_states(local + cur_idx, count - cur_idx,
+                                       inv, min_run, relay_on, relay_on_since,
+                                       eff_on + cur_idx);
+
     /* Build display slots from current slot onward */
     disp_slot_t dslots[DISP_MAX_BARS];
     int dcount = 0;
     for (int i = cur_idx; i < count && dcount < DISP_MAX_BARS; i++, dcount++) {
         dslots[dcount].price_eur_mwh = local[i].price;
         dslots[dcount].is_cheap      = local[i].cheap;
+        dslots[dcount].is_on         = eff_on[i];
     }
 
     int win_offset = (s_hours_window > 0) ? cur_idx % (s_hours_window * 4) : 0;
@@ -1495,11 +1633,12 @@ static void touch_task(void *arg)
 
         if (s_screen == SCREEN_MAIN) {
             xSemaphoreTake(s_mutex, portMAX_DELAY);
-            s_cfg_window = s_hours_window;
-            s_cfg_cheap  = s_cheap_hours;
+            s_cfg_window  = s_hours_window;
+            s_cfg_cheap   = s_cheap_hours;
+            s_cfg_min_run = s_min_run_minutes;
             xSemaphoreGive(s_mutex);
             s_screen = SCREEN_CONFIG;
-            display_show_config(s_cfg_cheap, s_cfg_window);
+            display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
         } else {
             int btn = display_config_hittest(tx, ty);
             switch (btn) {
@@ -1510,25 +1649,34 @@ static void touch_task(void *arg)
             case DISP_CFG_WIN_DEC:
                 if (s_cfg_window > 2) s_cfg_window--;
                 if (s_cfg_cheap >= s_cfg_window) s_cfg_cheap = s_cfg_window - 1;
-                display_show_config(s_cfg_cheap, s_cfg_window);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
                 break;
             case DISP_CFG_WIN_INC:
                 if (s_cfg_window < 24) s_cfg_window++;
-                display_show_config(s_cfg_cheap, s_cfg_window);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
                 break;
             case DISP_CFG_CHE_DEC:
                 if (s_cfg_cheap > 1) s_cfg_cheap--;
-                display_show_config(s_cfg_cheap, s_cfg_window);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
                 break;
             case DISP_CFG_CHE_INC:
                 if (s_cfg_cheap < s_cfg_window - 1) s_cfg_cheap++;
-                display_show_config(s_cfg_cheap, s_cfg_window);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                break;
+            case DISP_CFG_MIN_DEC:
+                if (s_cfg_min_run > 0) s_cfg_min_run -= 15;
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                break;
+            case DISP_CFG_MIN_INC:
+                if (s_cfg_min_run < 480) s_cfg_min_run += 15;
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
                 break;
             case DISP_CFG_SAVE:
                 xSemaphoreTake(s_mutex, portMAX_DELAY);
-                s_hours_window = s_cfg_window;
-                s_cheap_hours  = s_cfg_cheap;
-                mark_cheap_hours(s_hours, s_hour_count);
+                s_hours_window    = s_cfg_window;
+                s_cheap_hours     = s_cfg_cheap;
+                s_min_run_minutes = s_cfg_min_run;
+                mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);
                 xSemaphoreGive(s_mutex);
                 nvs_save_settings();
                 update_relay();
@@ -1561,9 +1709,14 @@ static void controller_task(void *arg)
         bool stale     = (s_hour_count == 0 || now - s_last_fetch > 25 * 3600);
         bool at_time   = (ti.tm_hour == s_fetch_hour);
         bool not_fresh = (now - s_last_fetch > 1800);   /* >30 min since last fetch */
+        /* Trigger refetch when fewer than 1 window of prices remains */
+        bool low_data  = (s_last_slot_ts > 0 && s_last_slot_ts > now &&
+                          s_last_slot_ts - now < (time_t)s_hours_window * 3600 &&
+                          now - s_last_fetch > 1800);
 
-        if (stale || (at_time && not_fresh)) {
-            ESP_LOGI(TAG, "Refreshing prices (stale=%d at_time=%d)", stale, at_time);
+        if (stale || low_data || (at_time && not_fresh)) {
+            ESP_LOGI(TAG, "Refreshing prices (stale=%d low_data=%d at_time=%d)",
+                     stale, low_data, at_time);
             if (fetch_prices() != ESP_OK)
                 ESP_LOGW(TAG, "Fetch failed, keeping old data");
         }
@@ -1650,13 +1803,13 @@ void app_main(void)
         mqtt_start();
         start_webserver();
         xTaskCreate(controller_task, "ctrl", 8192, NULL, 5, NULL);
-        xTaskCreate(touch_task, "touch", 4096, NULL, 4, NULL);
+        xTaskCreate(touch_task, "touch", 8192, NULL, 4, NULL);
     } else {
         s_ap_mode = true;
         ESP_LOGW(TAG, "STA failed — AP mode");
         wifi_start_ap();
         start_webserver();
         update_display();   /* show AP mode on screen */
-        xTaskCreate(touch_task, "touch", 4096, NULL, 4, NULL);
+        xTaskCreate(touch_task, "touch", 8192, NULL, 4, NULL);
     }
 }

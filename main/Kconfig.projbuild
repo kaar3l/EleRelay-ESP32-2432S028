@@ -39,6 +39,15 @@ menu "Elering Smart Relay"
         help
             How many of the cheapest hours in the window the relay should be ON.
 
+    config MIN_RUN_MINUTES
+        int "Minimum continuous run minutes (0 = disabled)"
+        default 0
+        range 0 480
+        help
+            Once the relay turns ON, keep it ON for at least this many minutes.
+            Useful for devices (e.g. washing machines) that need a full run cycle.
+            0 disables the feature.
+
     config LCD_ST7789
         bool "Use ST7789 display driver (some CYD variants)"
         default n

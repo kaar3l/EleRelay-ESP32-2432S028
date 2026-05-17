@@ -692,8 +692,8 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
             if (bar_h > chart_h) bar_h = chart_h;
             int bx = i * bar_w;
             int by = chart_y + chart_h - bar_h;
-            uint16_t col = slots[i].is_cheap ? C_DKGREEN : C_DKRED;
-            if (i == cur_idx) col = slots[i].is_cheap ? C_GREEN : C_RED;
+            uint16_t col = slots[i].is_on ? C_DKGREEN : C_DKRED;
+            if (i == cur_idx) col = slots[i].is_on ? C_GREEN : C_RED;
             fill_rect(bx, by, bar_w - 1, bar_h, col);
         }
 
@@ -718,12 +718,13 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 #define CFG_BTN_H      36
 #define CFG_DEC_X      20    /* left edge of [−] buttons */
 #define CFG_INC_X     240    /* left edge of [+] buttons */
-#define CFG_WIN_Y      50    /* top of window row */
-#define CFG_CHE_Y     115    /* top of cheap-hours row */
+#define CFG_WIN_Y      33    /* top of window row */
+#define CFG_CHE_Y      81    /* top of cheap-hours row */
+#define CFG_MIN_Y     138    /* top of min-run row */
 #define CFG_SAVE_X1    60
 #define CFG_SAVE_X2   259
-#define CFG_SAVE_Y1   175
-#define CFG_SAVE_Y2   210
+#define CFG_SAVE_Y1   178
+#define CFG_SAVE_Y2   214
 #define CFG_CLOSE_X1  282
 
 static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
@@ -737,7 +738,7 @@ static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
     draw_str(x + (w - tw) / 2, y + (h - 16) / 2, text, C_WHITE, bg, 2);
 }
 
-static void render_config_page(int cheap_hours, int hours_window)
+static void render_config_page(int cheap_hours, int hours_window, int min_run_minutes)
 {
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
@@ -747,7 +748,7 @@ static void render_config_page(int cheap_hours, int hours_window)
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
     /* Window size row */
-    draw_str(4, 34, DT("Window size:", "Akna suurus:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, 25, DT("Window size:", "Akna suurus:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     char vbuf[8];
@@ -759,7 +760,7 @@ static void render_config_page(int cheap_hours, int hours_window)
     }
 
     /* Cheap hours row */
-    draw_str(4, 99, DT("Cheap hours:", "Odavad tunnid:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, 73, DT("Cheap hours:", "Odavad tunnid:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
@@ -769,7 +770,22 @@ static void render_config_page(int cheap_hours, int hours_window)
         draw_str_16(vx, CFG_CHE_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
     }
 
-    draw_str(4, 157, DT("cheap < window", "odav < aken"), C_DKGRAY, C_BLACK, 1);
+    draw_str(4, 121, DT("cheap < window", "odav < aken"), C_DKGRAY, C_BLACK, 1);
+
+    /* Min. run time row */
+    draw_str(4, 130, DT("Min. run time:", "Min. kaitusaeg:"), C_GRAY, C_BLACK, 1);
+    draw_btn(CFG_DEC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
+    draw_btn(CFG_INC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
+    if (min_run_minutes == 0) {
+        snprintf(vbuf, sizeof(vbuf), "OFF");
+    } else {
+        snprintf(vbuf, sizeof(vbuf), "%dm", min_run_minutes);
+    }
+    {
+        int vw = (int)strlen(vbuf) * 32;
+        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
+        draw_str_16(vx, CFG_MIN_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
+    }
 
     /* Save button */
     draw_btn(CFG_SAVE_X1, CFG_SAVE_Y1,
@@ -777,13 +793,13 @@ static void render_config_page(int cheap_hours, int hours_window)
              DT("SAVE", "SALVESTA"), C_DKGREEN);
 }
 
-void display_show_config(int cheap_hours, int hours_window)
+void display_show_config(int cheap_hours, int hours_window, int min_run_minutes)
 {
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
         memset(s_fb, 0, LCD_W * rows * 2);
-        render_config_page(cheap_hours, hours_window);
+        render_config_page(cheap_hours, hours_window, min_run_minutes);
         flush_stripe(rows);
     }
     s_sy0 = 0;
@@ -795,10 +811,12 @@ int display_config_hittest(int tx, int ty)
     if (tx >= CFG_DEC_X && tx < CFG_DEC_X + CFG_BTN_W) {
         if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_DEC;
         if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_DEC;
+        if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_DEC;
     }
     if (tx >= CFG_INC_X && tx < CFG_INC_X + CFG_BTN_W) {
         if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_INC;
         if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_INC;
+        if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_INC;
     }
     if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
         ty >= CFG_SAVE_Y1 && ty <= CFG_SAVE_Y2) return DISP_CFG_SAVE;

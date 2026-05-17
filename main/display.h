@@ -4,7 +4,8 @@
 
 typedef struct {
     float price_eur_mwh;
-    bool  is_cheap;
+    bool  is_cheap;   /* price cheapness — drives CHEAP/EXPNS label */
+    bool  is_on;      /* effective relay state (accounts for min_run forcing) */
 } disp_slot_t;
 
 #define DISP_MAX_BARS 48
@@ -26,8 +27,10 @@ bool display_touch_read(int *x, int *y);   /* screen coords; true = finger down 
 #define DISP_CFG_CHE_DEC  3
 #define DISP_CFG_CHE_INC  4
 #define DISP_CFG_SAVE     5
+#define DISP_CFG_MIN_DEC  6
+#define DISP_CFG_MIN_INC  7
 
-void display_show_config(int cheap_hours, int hours_window);
+void display_show_config(int cheap_hours, int hours_window, int min_run_minutes);
 int  display_config_hittest(int tx, int ty);
 
 /* Language */
