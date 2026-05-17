@@ -7,7 +7,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 - Fetches 15-minute electricity price slots from the Elering API
 - Turns relay ON during the N cheapest hours in a configurable look-ahead window
 - ILI9341 320×240 colour display showing relay state, current price, and a price bar chart
-- **Touchscreen support** — tap the display to open a settings page; adjust cheap hours and window size directly on the device
+- **Touchscreen support** — tap the display to open a settings page; adjust window size, cheap hours, and minimum run time directly on the device; auto-closes after 60 s of inactivity
 - **English / Estonian UI** — language selector on the `/settings` page; applies to both the web interface and the LCD
 - Captive-portal style web UI (no app needed) for all settings
 - All settings stored in NVS — survive reboots
@@ -122,6 +122,7 @@ All settings are changed on the **`/settings`** page and take effect immediately
 |---------|---------|-------------|
 | Hours window | 12 h | Look-ahead window for cheap/expensive selection |
 | Cheap hours | 6 h | How many of the cheapest hours to turn the relay ON |
+| Min. consecutive run | 0 (off) | Once ON, keep relay ON for at least this many minutes — useful for appliances that need a full run cycle (e.g. washing machine). 0 = disabled. |
 | Inverted | off | When on, relay is ON during *expensive* hours instead |
 | Fetch prices at | 23:00 | Hour of day for the daily price refresh (Elering publishes next-day prices ~14:00 EET) |
 | Max slots on page | 48 | Maximum rows shown in the price table |
@@ -183,7 +184,15 @@ White vertical lines in the bar chart mark the boundaries of each look-ahead win
 
 ### LCD touch configuration
 
-Tap anywhere on the display to open the on-screen settings page. Use the **−** and **+** buttons to adjust **Window size** and **Cheap hours**, then tap **SAVE** to persist the values to NVS. Tap **✕** to close without saving.
+Tap anywhere on the display to open the on-screen settings page. Use the **−** and **+** buttons to adjust:
+
+| Row | Step | Range |
+|-----|------|-------|
+| Window size | 1 h | 2–24 h |
+| Cheap hours | 1 h | 1 h … window−1 |
+| Min. run time | 15 min | 0 (OFF) – 480 min |
+
+Tap **SAVE** to persist all values to NVS, or **✕** to close without saving. The page closes automatically after **60 seconds of inactivity**.
 
 ## Compile-time defaults (menuconfig)
 
@@ -195,6 +204,7 @@ Tap anywhere on the display to open the on-screen settings page. Use the **−**
 | Relay active LOW | yes |
 | Hours window | 12 |
 | Cheap hours | 6 |
+| Min. consecutive run | 0 (disabled) |
 
 These are only used on first boot if no NVS credentials/settings exist. All can be overridden at runtime via the web UI or the LCD touch settings page.
 
