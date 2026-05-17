@@ -1621,11 +1621,21 @@ static void update_display(void)
 
 static void touch_task(void *arg)
 {
-    bool was_touched = false;
+    bool      was_touched    = false;
+    TickType_t cfg_entered_at = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(50));
         int tx, ty;
         bool touched = display_touch_read(&tx, &ty);
+
+        /* Auto-close config screen after 60 s of inactivity */
+        if (s_screen == SCREEN_CONFIG &&
+            (xTaskGetTickCount() - cfg_entered_at) > pdMS_TO_TICKS(60000)) {
+            s_screen = SCREEN_MAIN;
+            update_display();
+            was_touched = false;
+            continue;
+        }
 
         if (!touched) { was_touched = false; continue; }
         if (was_touched) continue;  /* wait for finger lift before next event */
@@ -1638,8 +1648,10 @@ static void touch_task(void *arg)
             s_cfg_min_run = s_min_run_minutes;
             xSemaphoreGive(s_mutex);
             s_screen = SCREEN_CONFIG;
+            cfg_entered_at = xTaskGetTickCount();
             display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
         } else {
+            cfg_entered_at = xTaskGetTickCount();  /* any touch resets the timer */
             int btn = display_config_hittest(tx, ty);
             switch (btn) {
             case DISP_CFG_CLOSE:
