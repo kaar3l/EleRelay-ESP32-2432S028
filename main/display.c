@@ -755,7 +755,7 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
     /* Window size row */
-    draw_str(4, 25, DT("Window size:", "Akna suurus:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, 25, DT("Window size:", "Akna suurus:"), C_YELLOW, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     char vbuf[16];
@@ -767,7 +767,7 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
     }
 
     /* Cheap hours row */
-    draw_str(4, CFG_CHE_Y - 8, DT("Cheap hours:", "Odavad tunnid:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, CFG_CHE_Y - 8, DT("Cheap hours:", "Odavad tunnid:"), C_YELLOW, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
@@ -778,7 +778,7 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
     }
 
     /* Min. run time row */
-    draw_str(4, CFG_MIN_Y - 8, DT("Min. run time:", "Min. kaitusaeg:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, CFG_MIN_Y - 8, DT("Min. run time:", "Min. kaitusaeg:"), C_YELLOW, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     if (min_run_minutes == 0) {
@@ -794,9 +794,9 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
 
     /* Always ON row: label shows current limit, button toggles enable */
     {
-        char lbuf[20];
-        snprintf(lbuf, sizeof(lbuf), "AlwON < %.1fc:", aon_lim_mwh / 10.0f);
-        draw_str(4, CFG_AON_Y - 8, lbuf, C_GRAY, C_BLACK, 1);
+        char lbuf[28];
+        snprintf(lbuf, sizeof(lbuf), "Alati sees < %.1fc:", aon_lim_mwh / 10.0f);
+        draw_str(4, CFG_AON_Y - 8, lbuf, C_YELLOW, C_BLACK, 1);
         uint16_t tcol = aon_en ? C_DKGREEN : C_DKGRAY;
         draw_btn(CFG_TOG_X0, CFG_AON_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
                  aon_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
@@ -804,9 +804,9 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
 
     /* Always OFF row: label shows current limit, button toggles enable */
     {
-        char lbuf[20];
-        snprintf(lbuf, sizeof(lbuf), "AlwOFF > %.1fc:", aoff_lim_mwh / 10.0f);
-        draw_str(4, CFG_AOFF_Y - 8, lbuf, C_GRAY, C_BLACK, 1);
+        char lbuf[28];
+        snprintf(lbuf, sizeof(lbuf), "Alati valjas > %.1fc:", aoff_lim_mwh / 10.0f);
+        draw_str(4, CFG_AOFF_Y - 8, lbuf, C_YELLOW, C_BLACK, 1);
         uint16_t tcol = aoff_en ? C_DKRED : C_DKGRAY;
         draw_btn(CFG_TOG_X0, CFG_AOFF_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
                  aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
