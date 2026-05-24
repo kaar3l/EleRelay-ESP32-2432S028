@@ -722,14 +722,14 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 #define CFG_DEC_X      20    /* left edge of [−] buttons */
 #define CFG_INC_X     240    /* left edge of [+] buttons */
 #define CFG_WIN_Y      33    /* top of window row */
-#define CFG_CHE_Y      69    /* top of cheap-hours row */
-#define CFG_MIN_Y     105    /* top of min-run row */
-#define CFG_AON_Y     141    /* top of always-on toggle */
-#define CFG_AOFF_Y    173    /* top of always-off toggle */
+#define CFG_CHE_Y      71    /* top of cheap-hours row */
+#define CFG_MIN_Y     109    /* top of min-run row */
+#define CFG_AON_Y     147    /* top of always-on toggle */
+#define CFG_AOFF_Y    181    /* top of always-off toggle */
 #define CFG_SAVE_X1    60
 #define CFG_SAVE_X2   259
-#define CFG_SAVE_Y1   199
-#define CFG_SAVE_Y2   231
+#define CFG_SAVE_Y1   207
+#define CFG_SAVE_Y2   239
 #define CFG_CLOSE_X1  282
 
 static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
