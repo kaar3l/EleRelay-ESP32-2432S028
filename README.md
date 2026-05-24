@@ -6,8 +6,10 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 
 - Fetches 15-minute electricity price slots from the Elering API
 - Turns relay ON during the N cheapest hours in a configurable look-ahead window
+- **Always-ON price limit** — force relay ON whenever the spot price is at or below a set threshold (overrides normal schedule)
+- **Always-OFF price limit** — force relay OFF whenever the spot price is at or above a set threshold (highest priority; overrides always-ON and min-run)
 - ILI9341 320×240 colour display showing relay state, current price, and a price bar chart
-- **Touchscreen support** — tap the display to open a settings page; adjust window size, cheap hours, and minimum run time directly on the device; auto-closes after 60 s of inactivity
+- **Touchscreen support** — tap the display to open a settings page; adjust window size, cheap hours, minimum run time, and price limit toggles directly on the device; auto-closes after 60 s of inactivity
 - **English / Estonian UI** — language selector on the `/settings` page; applies to both the web interface and the LCD
 - Captive-portal style web UI (no app needed) for all settings
 - All settings stored in NVS — survive reboots
@@ -127,6 +129,17 @@ All settings are changed on the **`/settings`** page and take effect immediately
 | Fetch prices at | 23:00 | Hour of day for the daily price refresh (Elering publishes next-day prices ~14:00 EET) |
 | Max slots on page | 48 | Maximum rows shown in the price table |
 
+### Price Limits
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Always ON — enable | off | Enable always-ON price limit |
+| Always ON — limit (c/kWh) | 0.0 | Force relay ON when spot price ≤ this value, regardless of schedule |
+| Always OFF — enable | off | Enable always-OFF price limit |
+| Always OFF — limit (c/kWh) | 20.0 | Force relay OFF when spot price ≥ this value — takes priority over always-ON and min. run |
+
+Price limits accept decimal values (e.g. `0.5`, `15.3`). Both limits can be toggled on the `/settings` page and on the LCD touch config screen.
+
 ### Language
 
 Select **English** or **Eesti (Estonian)** from the Language drop-down on `/settings`. The choice applies to both the web interface and the LCD display immediately.
@@ -186,11 +199,15 @@ White vertical lines in the bar chart mark the boundaries of each look-ahead win
 
 Tap anywhere on the display to open the on-screen settings page. Use the **−** and **+** buttons to adjust:
 
-| Row | Step | Range |
-|-----|------|-------|
-| Window size | 1 h | 2–24 h |
-| Cheap hours | 1 h | 1 h … window−1 |
-| Min. run time | 15 min | 0 (OFF) – 480 min |
+| Row | Control | Notes |
+|-----|---------|-------|
+| Window size | − / + buttons, 1 h step | Range 2–24 h |
+| Cheap hours | − / + buttons, 1 h step | Range 1 h … window−1 |
+| Min. run time | − / + buttons, 15 min step | 0 (OFF) – 480 min |
+| Alati sees (Always ON) | toggle button | Green = enabled; shows limit in c/kWh |
+| Alati valjas (Always OFF) | toggle button | Red = enabled; shows limit in c/kWh |
+
+Price limit thresholds are set on the `/settings` web page. The LCD toggles only enable/disable them.
 
 Tap **SAVE** to persist all values to NVS, or **✕** to close without saving. The page closes automatically after **60 seconds of inactivity**.
 
