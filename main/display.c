@@ -715,16 +715,21 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 
 /* Button regions — shared between render and hittest */
 #define CFG_BTN_W      60
-#define CFG_BTN_H      36
+#define CFG_BTN_H      26    /* reduced from 36 to fit 5 rows */
+#define CFG_TOG_H      22    /* always-on/off toggle button height */
+#define CFG_TOG_X0     20    /* toggle button left edge */
+#define CFG_TOG_X1    299    /* toggle button right edge */
 #define CFG_DEC_X      20    /* left edge of [−] buttons */
 #define CFG_INC_X     240    /* left edge of [+] buttons */
 #define CFG_WIN_Y      33    /* top of window row */
-#define CFG_CHE_Y      81    /* top of cheap-hours row */
-#define CFG_MIN_Y     138    /* top of min-run row */
+#define CFG_CHE_Y      69    /* top of cheap-hours row */
+#define CFG_MIN_Y     105    /* top of min-run row */
+#define CFG_AON_Y     141    /* top of always-on toggle */
+#define CFG_AOFF_Y    173    /* top of always-off toggle */
 #define CFG_SAVE_X1    60
 #define CFG_SAVE_X2   259
-#define CFG_SAVE_Y1   178
-#define CFG_SAVE_Y2   214
+#define CFG_SAVE_Y1   199
+#define CFG_SAVE_Y2   231
 #define CFG_CLOSE_X1  282
 
 static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
@@ -738,7 +743,9 @@ static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
     draw_str(x + (w - tw) / 2, y + (h - 16) / 2, text, C_WHITE, bg, 2);
 }
 
-static void render_config_page(int cheap_hours, int hours_window, int min_run_minutes)
+static void render_config_page(int cheap_hours, int hours_window, int min_run_minutes,
+                                bool aon_en, int aon_lim_mwh,
+                                bool aoff_en, int aoff_lim_mwh)
 {
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
@@ -751,29 +758,27 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
     draw_str(4, 25, DT("Window size:", "Akna suurus:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
-    char vbuf[8];
+    char vbuf[16];
     snprintf(vbuf, sizeof(vbuf), "%dh", hours_window);
     {
-        int vw = (int)strlen(vbuf) * 32;  /* 16×16 scale 2 */
+        int vw = (int)strlen(vbuf) * 16;
         int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str_16(vx, CFG_WIN_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
+        draw_str(vx, CFG_WIN_Y + (CFG_BTN_H - 16) / 2, vbuf, C_WHITE, C_BLACK, 2);
     }
 
     /* Cheap hours row */
-    draw_str(4, 73, DT("Cheap hours:", "Odavad tunnid:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, CFG_CHE_Y - 8, DT("Cheap hours:", "Odavad tunnid:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
     {
-        int vw = (int)strlen(vbuf) * 32;  /* 16×16 scale 2 */
+        int vw = (int)strlen(vbuf) * 16;
         int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str_16(vx, CFG_CHE_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
+        draw_str(vx, CFG_CHE_Y + (CFG_BTN_H - 16) / 2, vbuf, C_WHITE, C_BLACK, 2);
     }
 
-    draw_str(4, 121, DT("cheap < window", "odav < aken"), C_DKGRAY, C_BLACK, 1);
-
     /* Min. run time row */
-    draw_str(4, 130, DT("Min. run time:", "Min. kaitusaeg:"), C_GRAY, C_BLACK, 1);
+    draw_str(4, CFG_MIN_Y - 8, DT("Min. run time:", "Min. kaitusaeg:"), C_GRAY, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     if (min_run_minutes == 0) {
@@ -782,9 +787,29 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
         snprintf(vbuf, sizeof(vbuf), "%dm", min_run_minutes);
     }
     {
-        int vw = (int)strlen(vbuf) * 32;
+        int vw = (int)strlen(vbuf) * 16;
         int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str_16(vx, CFG_MIN_Y + 2, vbuf, C_WHITE, C_BLACK, 2);
+        draw_str(vx, CFG_MIN_Y + (CFG_BTN_H - 16) / 2, vbuf, C_WHITE, C_BLACK, 2);
+    }
+
+    /* Always ON row: label shows current limit, button toggles enable */
+    {
+        char lbuf[20];
+        snprintf(lbuf, sizeof(lbuf), "AlwON < %.1fc:", aon_lim_mwh / 10.0f);
+        draw_str(4, CFG_AON_Y - 8, lbuf, C_GRAY, C_BLACK, 1);
+        uint16_t tcol = aon_en ? C_DKGREEN : C_DKGRAY;
+        draw_btn(CFG_TOG_X0, CFG_AON_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
+                 aon_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
+    }
+
+    /* Always OFF row: label shows current limit, button toggles enable */
+    {
+        char lbuf[20];
+        snprintf(lbuf, sizeof(lbuf), "AlwOFF > %.1fc:", aoff_lim_mwh / 10.0f);
+        draw_str(4, CFG_AOFF_Y - 8, lbuf, C_GRAY, C_BLACK, 1);
+        uint16_t tcol = aoff_en ? C_DKRED : C_DKGRAY;
+        draw_btn(CFG_TOG_X0, CFG_AOFF_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
+                 aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
 
     /* Save button */
@@ -793,13 +818,16 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
              DT("SAVE", "SALVESTA"), C_DKGREEN);
 }
 
-void display_show_config(int cheap_hours, int hours_window, int min_run_minutes)
+void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
+                          bool aon_en, int aon_lim_mwh,
+                          bool aoff_en, int aoff_lim_mwh)
 {
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
         memset(s_fb, 0, LCD_W * rows * 2);
-        render_config_page(cheap_hours, hours_window, min_run_minutes);
+        render_config_page(cheap_hours, hours_window, min_run_minutes,
+                           aon_en, aon_lim_mwh, aoff_en, aoff_lim_mwh);
         flush_stripe(rows);
     }
     s_sy0 = 0;
@@ -817,6 +845,10 @@ int display_config_hittest(int tx, int ty)
         if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_INC;
         if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_INC;
         if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_INC;
+    }
+    if (tx >= CFG_TOG_X0 && tx <= CFG_TOG_X1) {
+        if (ty >= CFG_AON_Y  && ty < CFG_AON_Y  + CFG_TOG_H) return DISP_CFG_AON_TOG;
+        if (ty >= CFG_AOFF_Y && ty < CFG_AOFF_Y + CFG_TOG_H) return DISP_CFG_AOFF_TOG;
     }
     if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
         ty >= CFG_SAVE_Y1 && ty <= CFG_SAVE_Y2) return DISP_CFG_SAVE;

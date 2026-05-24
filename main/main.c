@@ -79,6 +79,10 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_MQTT_TRLY "mqtt_topic_r"
 #define NVS_KEY_LANG      "lang"
 #define NVS_KEY_MIN_RUN   "min_run_min"
+#define NVS_KEY_AON_EN    "aon_en"
+#define NVS_KEY_AON_LIM   "aon_lim"
+#define NVS_KEY_AOFF_EN   "aoff_en"
+#define NVS_KEY_AOFF_LIM  "aoff_lim"
 
 /* Picks between English and Estonian at runtime */
 #define T(en, et) (s_lang == LANG_ET ? (et) : (en))
@@ -95,6 +99,10 @@ static bool s_relay_inv       = false;                  /* invert relay logic */
 static int  s_fetch_hour      = 23;                     /* 0-23               */
 static int  s_max_display     = 48;                     /* max rows in table  */
 static int  s_min_run_minutes = CONFIG_MIN_RUN_MINUTES; /* 0 = disabled       */
+static bool s_always_on_en    = false;                  /* force ON below limit */
+static int  s_always_on_limit = 0;                      /* EUR/MWh (0 = 0 c/kWh) */
+static bool s_always_off_en   = false;                  /* force OFF above limit */
+static int  s_always_off_limit = 200;                   /* EUR/MWh (200 = 20 c/kWh) */
 
 static char s_ntp_server[STR_LEN]       = "pool.ntp.org";
 static char s_tz_str[STR_LEN]           = "EET-2EEST,M3.5.0/3,M10.5.0/4";
@@ -141,6 +149,8 @@ static volatile screen_t s_screen    = SCREEN_MAIN;
 static int               s_cfg_window   = 0;
 static int               s_cfg_cheap    = 0;
 static int               s_cfg_min_run  = 0;
+static bool              s_cfg_aon_en   = false;
+static bool              s_cfg_aoff_en  = false;
 
 /* ── NVS: WiFi credentials ───────────────────────────────────────────────── */
 
@@ -190,6 +200,12 @@ static void nvs_load_settings(void)
     uint16_t mrm;
     if (nvs_get_u16(h, NVS_KEY_MIN_RUN, &mrm) == ESP_OK) s_min_run_minutes = mrm;
 
+    if (nvs_get_u8(h, NVS_KEY_AON_EN,  &v) == ESP_OK) s_always_on_en  = (bool)v;
+    if (nvs_get_u8(h, NVS_KEY_AOFF_EN, &v) == ESP_OK) s_always_off_en = (bool)v;
+    int16_t lim;
+    if (nvs_get_i16(h, NVS_KEY_AON_LIM,  &lim) == ESP_OK) s_always_on_limit  = lim;
+    if (nvs_get_i16(h, NVS_KEY_AOFF_LIM, &lim) == ESP_OK) s_always_off_limit = lim;
+
     size_t len;
     len = STR_LEN; nvs_get_str(h, NVS_KEY_NTP_SRV,  s_ntp_server,       &len);
     len = STR_LEN; nvs_get_str(h, NVS_KEY_TZ,        s_tz_str,           &len);
@@ -214,6 +230,10 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
     err |= nvs_set_u16(h, NVS_KEY_MIN_RUN,   (uint16_t)s_min_run_minutes);
+    err |= nvs_set_u8(h,  NVS_KEY_AON_EN,    (uint8_t)s_always_on_en);
+    err |= nvs_set_i16(h, NVS_KEY_AON_LIM,   (int16_t)s_always_on_limit);
+    err |= nvs_set_u8(h,  NVS_KEY_AOFF_EN,   (uint8_t)s_always_off_en);
+    err |= nvs_set_i16(h, NVS_KEY_AOFF_LIM,  (int16_t)s_always_off_limit);
     err |= nvs_set_str(h, NVS_KEY_NTP_SRV,   s_ntp_server);
     err |= nvs_set_str(h, NVS_KEY_TZ,        s_tz_str);
     err |= nvs_set_str(h, NVS_KEY_MQTT_HOST, s_mqtt_host);
@@ -586,6 +606,7 @@ static esp_err_t fetch_prices(void)
 
 static void update_display(void);   /* forward declaration */
 static void compute_effective_relay_states(const hour_slot_t *, int, bool, int,
+                                           bool, int, bool, int,
                                            bool, time_t, bool *); /* forward */
 
 /* ── Relay ───────────────────────────────────────────────────────────────── */
@@ -594,26 +615,37 @@ static void update_relay(void)
 {
     time_t now; time(&now);
     time_t cur_slot = (now / 900) * 900;    /* round down to 15-min boundary */
-    bool  is_cheap   = false;
-    bool  found_slot = false;
-    float cur_price  = 0.0f;
+    bool  is_cheap       = false;
+    bool  found_slot     = false;
+    float cur_price      = 0.0f;
+    float raw_price_mwh  = 0.0f;
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     for (int i = 0; i < s_hour_count; i++) {
         if (s_hours[i].ts == cur_slot) {
-            is_cheap   = s_hours[i].cheap;
-            cur_price  = s_hours[i].price / 10.0f;   /* EUR/MWh → c/kWh */
-            found_slot = true;
+            is_cheap      = s_hours[i].cheap;
+            cur_price     = s_hours[i].price / 10.0f;   /* EUR/MWh → c/kWh */
+            raw_price_mwh = s_hours[i].price;
+            found_slot    = true;
             break;
         }
     }
     bool on = is_cheap ^ s_relay_inv;   /* invert flips cheap↔expensive */
+
+    /* Always ON: force relay ON when price is at or below limit */
+    if (s_always_on_en && found_slot && raw_price_mwh <= (float)s_always_on_limit)
+        on = true;
 
     /* Enforce minimum continuous run time: once ON, stay ON for s_min_run_minutes */
     if (!on && s_min_run_minutes > 0 && s_relay_on && s_relay_on_since > 0) {
         if (now - s_relay_on_since < (time_t)s_min_run_minutes * 60)
             on = true;
     }
+
+    /* Always OFF: force relay OFF when price is at or above limit (highest priority) */
+    if (s_always_off_en && found_slot && raw_price_mwh >= (float)s_always_off_limit)
+        on = false;
+
     /* Track when relay transitions to ON */
     if (on && !s_relay_on)
         s_relay_on_since = now;
@@ -778,6 +810,55 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
               " Kasulik seadmetele, mis vajavad t&auml;ielikku t&ouml;&ouml;tsüklit (nt 60 min = 1 tund)."));
         httpd_resp_sendstr_chunk(req, buf);
     }
+
+    /* Always ON / OFF overrides */
+    snprintf(chunk, sizeof(chunk), "<h2>%s</h2>",
+        T("Override: Always ON / Always OFF", "Limiidid: Alati SEES / V&auml;ljas"));
+    httpd_resp_sendstr_chunk(req, chunk);
+
+    {
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "<div class='chk'>"
+            "<input type='checkbox' name='aon_en' id='aon_en'%s>"
+            "<label for='aon_en' style='margin:0;color:#222'>%s</label>"
+            "</div>"
+            "<input type='text' inputmode='decimal' name='aon_lim'"
+            " style='width:100%%;box-sizing:border-box;padding:7px;margin-top:4px;"
+            "border:1px solid #ccc;border-radius:6px;font-size:1rem'"
+            " value='%.1f'>",
+            s_always_on_en ? " checked" : "",
+            T("Always ON when price is at or below (c/kWh):",
+              "Alati SEES kui hind on kuni (s/kWh):"),
+            s_always_on_limit / 10.0f);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+    snprintf(chunk, sizeof(chunk), "<p class='note'>%s</p>",
+        T("Force relay ON whenever price &le; this value, ignoring the schedule.",
+          "Sunnib relee SISSE kui hind &le; v&auml;&auml;rtus, ignoreerides graafiku."));
+    httpd_resp_sendstr_chunk(req, chunk);
+
+    {
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "<div class='chk'>"
+            "<input type='checkbox' name='aoff_en' id='aoff_en'%s>"
+            "<label for='aoff_en' style='margin:0;color:#222'>%s</label>"
+            "</div>"
+            "<input type='text' inputmode='decimal' name='aoff_lim'"
+            " style='width:100%%;box-sizing:border-box;padding:7px;margin-top:4px;"
+            "border:1px solid #ccc;border-radius:6px;font-size:1rem'"
+            " value='%.1f'>",
+            s_always_off_en ? " checked" : "",
+            T("Always OFF when price is at or above (c/kWh):",
+              "Alati V&auml;ljas kui hind on v&auml;hemalt (s/kWh):"),
+            s_always_off_limit / 10.0f);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+    snprintf(chunk, sizeof(chunk), "<p class='note'>%s</p>",
+        T("Force relay OFF whenever price &ge; this value. Takes priority over Always ON and min-run.",
+          "Sunnib relee V&auml;LJA kui hind &ge; v&auml;&auml;rtus. Prioriteet Always ON ja min-k&auml;ituse ees."));
+    httpd_resp_sendstr_chunk(req, chunk);
 
     /* Relay inverted checkbox */
     {
@@ -980,6 +1061,18 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "min_run", val, sizeof(val));
     int min_run = clamp(atoi(val), 0, 480);
 
+    bool aon_en = (strstr(body, "aon_en=on") || strstr(body, "aon_en=1"));
+    form_field(body, "aon_lim", val, sizeof(val));
+    for (char *p = val; *p; p++) if (*p == ',') *p = '.';  /* locale-safe */
+    int aon_lim = (int)(atof(val) * 10.0f);
+    aon_lim = aon_lim < -1000 ? -1000 : aon_lim > 10000 ? 10000 : aon_lim;
+
+    bool aoff_en = (strstr(body, "aoff_en=on") || strstr(body, "aoff_en=1"));
+    form_field(body, "aoff_lim", val, sizeof(val));
+    for (char *p = val; *p; p++) if (*p == ',') *p = '.';  /* locale-safe */
+    int aoff_lim = (int)(atof(val) * 10.0f);
+    aoff_lim = aoff_lim < -1000 ? -1000 : aoff_lim > 10000 ? 10000 : aoff_lim;
+
     /* Time settings */
     char ntp_server[STR_LEN] = {0};
     form_field(body, "ntp_server", ntp_server, sizeof(ntp_server));
@@ -1017,7 +1110,11 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     s_relay_inv    = inv;
     s_fetch_hour   = fetch_h;
     s_max_display     = max_disp;
-    s_min_run_minutes = min_run;
+    s_min_run_minutes  = min_run;
+    s_always_on_en     = aon_en;
+    s_always_on_limit  = aon_lim;
+    s_always_off_en    = aoff_en;
+    s_always_off_limit = aoff_lim;
     strlcpy(s_ntp_server,       ntp_server,  sizeof(s_ntp_server));
     strlcpy(s_tz_str,           tz_str,      sizeof(s_tz_str));
     s_mqtt_enabled = mqtt_en;
@@ -1040,13 +1137,15 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     mqtt_start();            /* restart MQTT client with new settings */
 
     ESP_LOGI(TAG, "Settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
-             "max_disp=%d min_run=%d ntp=%s tz=%s mqtt=%d host=%s port=%d tp=%s tr=%s",
+             "max_disp=%d min_run=%d aon=%d@%d aoff=%d@%d "
+             "ntp=%s tz=%s mqtt=%d host=%s port=%d tp=%s tr=%s",
              window, cheap, inv, fetch_h, max_disp, min_run,
+             aon_en, aon_lim, aoff_en, aoff_lim,
              ntp_server, tz_str, mqtt_en, mqtt_host, mqtt_port,
              mqtt_topic_p, mqtt_topic_r);
 
     send_page_head(req, T("ElereRelay \xe2\x80\x94 Settings", "ElereRelay \xe2\x80\x94 Seaded"));
-    char chunk[1024];
+    char chunk[2048];
     snprintf(chunk, sizeof(chunk),
         "<h1>%s</h1>"
         "<p>&#x2714; %s</p>"
@@ -1060,6 +1159,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         "<li>NTP: <b>%s</b></li>"
         "<li>TZ: <b>%s</b></li>"
         "<li>MQTT: <b>%s</b>%s</li>"
+        "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
+        "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
         "</ul>"
         "<p><a href='/settings'>%s</a>"
         " &nbsp; <a href='/'>%s</a></p>"
@@ -1075,6 +1176,10 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         ntp_server, tz_str,
         mqtt_en ? T("enabled","lubatud") : T("disabled","keelatud"),
         mqtt_en && mqtt_host[0] ? T(" \xe2\x80\x94 connecting...", " \xe2\x80\x94 \xc3\xbchendun...") : "",
+        T("Always ON &le;:", "Alati SEES &le;:"),
+        aon_en ? T("on","sees") : T("off","v&auml;ljas"), aon_lim / 10.0f,
+        T("Always OFF &ge;:", "Alati V&auml;ljas &ge;:"),
+        aoff_en ? T("on","sees") : T("off","v&auml;ljas"), aoff_lim / 10.0f,
         T("Back to settings", "Tagasi seadetesse"),
         T("Price table", "Hinnad"));
     httpd_resp_sendstr_chunk(req, chunk);
@@ -1197,6 +1302,10 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     int         max_disp       = s_max_display;
     int         win_hours      = s_hours_window;
     int         min_run        = s_min_run_minutes;
+    bool        aon_en         = s_always_on_en;
+    int         aon_lim        = s_always_on_limit;
+    bool        aoff_en        = s_always_off_en;
+    int         aoff_lim       = s_always_off_limit;
     hour_slot_t local[MAX_SLOTS];
     memcpy(local, s_hours, count * sizeof(hour_slot_t));
     xSemaphoreGive(s_mutex);
@@ -1217,7 +1326,9 @@ static esp_err_t web_get_handler(httpd_req_t *req)
             eff_on[i] = local[i].cheap ^ inv;   /* past slots: price-only, not shown */
         if (sim_start < count)
             compute_effective_relay_states(local + sim_start, count - sim_start,
-                                           inv, min_run, relay_on, relay_on_since,
+                                           inv, min_run,
+                                           aon_en, aon_lim, aoff_en, aoff_lim,
+                                           relay_on, relay_on_since,
                                            eff_on + sim_start);
     }
     if (last_fetch) {
@@ -1545,6 +1656,8 @@ static httpd_handle_t start_webserver(void)
 static void compute_effective_relay_states(
     const hour_slot_t *slots, int count,
     bool inv, int min_run_minutes,
+    bool aon_en, int aon_lim,
+    bool aoff_en, int aoff_lim,
     bool init_relay_on, time_t init_relay_on_since,
     bool *out_relay_on)
 {
@@ -1553,16 +1666,18 @@ static void compute_effective_relay_states(
 
     for (int i = 0; i < count; i++) {
         bool want_on = slots[i].cheap ^ inv;
-        bool on      = want_on;
+        if (aon_en && slots[i].price <= (float)aon_lim) want_on = true;
+        bool on = want_on;
         if (!on && min_run_minutes > 0 && relay_on && relay_on_since > 0) {
             if (slots[i].ts - relay_on_since < (time_t)min_run_minutes * 60)
                 on = true;
         }
+        if (aoff_en && slots[i].price >= (float)aoff_lim) on = false;
         if (on && !relay_on)
             relay_on_since = slots[i].ts;
         else if (!on)
             relay_on_since = 0;
-        relay_on     = on;
+        relay_on        = on;
         out_relay_on[i] = on;
     }
 }
@@ -1580,6 +1695,10 @@ static void update_display(void)
     time_t relay_on_since = s_relay_on_since;
     bool   inv            = s_relay_inv;
     int    min_run        = s_min_run_minutes;
+    bool   aon_en         = s_always_on_en;
+    int    aon_lim        = s_always_on_limit;
+    bool   aoff_en        = s_always_off_en;
+    int    aoff_lim       = s_always_off_limit;
     bool   ap_mode        = s_ap_mode;
     int    count          = s_hour_count;
     hour_slot_t local[MAX_SLOTS];
@@ -1599,7 +1718,9 @@ static void update_display(void)
         eff_on[i] = local[i].cheap ^ inv;
     if (cur_idx < count)
         compute_effective_relay_states(local + cur_idx, count - cur_idx,
-                                       inv, min_run, relay_on, relay_on_since,
+                                       inv, min_run,
+                                       aon_en, aon_lim, aoff_en, aoff_lim,
+                                       relay_on, relay_on_since,
                                        eff_on + cur_idx);
 
     /* Build display slots from current slot onward */
@@ -1646,10 +1767,14 @@ static void touch_task(void *arg)
             s_cfg_window  = s_hours_window;
             s_cfg_cheap   = s_cheap_hours;
             s_cfg_min_run = s_min_run_minutes;
+            s_cfg_aon_en  = s_always_on_en;
+            s_cfg_aoff_en = s_always_off_en;
             xSemaphoreGive(s_mutex);
             s_screen = SCREEN_CONFIG;
             cfg_entered_at = xTaskGetTickCount();
-            display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+            display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                s_cfg_aon_en, s_always_on_limit,
+                                s_cfg_aoff_en, s_always_off_limit);
         } else {
             cfg_entered_at = xTaskGetTickCount();  /* any touch resets the timer */
             int btn = display_config_hittest(tx, ty);
@@ -1661,33 +1786,59 @@ static void touch_task(void *arg)
             case DISP_CFG_WIN_DEC:
                 if (s_cfg_window > 2) s_cfg_window--;
                 if (s_cfg_cheap >= s_cfg_window) s_cfg_cheap = s_cfg_window - 1;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
                 break;
             case DISP_CFG_WIN_INC:
                 if (s_cfg_window < 24) s_cfg_window++;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
                 break;
             case DISP_CFG_CHE_DEC:
                 if (s_cfg_cheap > 1) s_cfg_cheap--;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
                 break;
             case DISP_CFG_CHE_INC:
                 if (s_cfg_cheap < s_cfg_window - 1) s_cfg_cheap++;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
                 break;
             case DISP_CFG_MIN_DEC:
                 if (s_cfg_min_run > 0) s_cfg_min_run -= 15;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
                 break;
             case DISP_CFG_MIN_INC:
                 if (s_cfg_min_run < 480) s_cfg_min_run += 15;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run);
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
+                break;
+            case DISP_CFG_AON_TOG:
+                s_cfg_aon_en = !s_cfg_aon_en;
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
+                break;
+            case DISP_CFG_AOFF_TOG:
+                s_cfg_aoff_en = !s_cfg_aoff_en;
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_always_on_limit,
+                                    s_cfg_aoff_en, s_always_off_limit);
                 break;
             case DISP_CFG_SAVE:
                 xSemaphoreTake(s_mutex, portMAX_DELAY);
                 s_hours_window    = s_cfg_window;
                 s_cheap_hours     = s_cfg_cheap;
                 s_min_run_minutes = s_cfg_min_run;
+                s_always_on_en    = s_cfg_aon_en;
+                s_always_off_en   = s_cfg_aoff_en;
                 mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);
                 xSemaphoreGive(s_mutex);
                 nvs_save_settings();

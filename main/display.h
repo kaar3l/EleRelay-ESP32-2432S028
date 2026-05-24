@@ -29,8 +29,12 @@ bool display_touch_read(int *x, int *y);   /* screen coords; true = finger down 
 #define DISP_CFG_SAVE     5
 #define DISP_CFG_MIN_DEC  6
 #define DISP_CFG_MIN_INC  7
+#define DISP_CFG_AON_TOG  8   /* toggle always-on enable */
+#define DISP_CFG_AOFF_TOG 9   /* toggle always-off enable */
 
-void display_show_config(int cheap_hours, int hours_window, int min_run_minutes);
+void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
+                          bool aon_en, int aon_lim_mwh,
+                          bool aoff_en, int aoff_lim_mwh);
 int  display_config_hittest(int tx, int ty);
 
 /* Language */
