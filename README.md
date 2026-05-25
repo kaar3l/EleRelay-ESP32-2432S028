@@ -183,15 +183,17 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 ┌──────────────────────────────────┐
 │ EleRelay        Thu 16 Apr 13:42 │  ← header
 ├──────────────────────────────────┤
-│ RELAY    CHEAP                   │
-│  ON      8.7c                    │  ← relay status + current price
-│          /kWh                    │
+│ RELEE               ON           │  ← relay label + state (green=ON, red=OFF)
+│ HIND               8.7 s/        │  ← price label + current price (same color)
+│                        kWh       │
 ├──────────────────────────────────┤
 │ WiFi: MyNetwork        6h/12h    │  ← WiFi info + window setting
 ├──────────────────────────────────┤
 │ ▁▂▃█▇▅▄▃▂▁▂▃▄▅▆▇▅▄▃▂▁▂▃▄       │  ← price bar chart (green=cheap, red=expensive)
 └──────────────────────────────────┘
 ```
+
+Labels (RELEE, HIND) left-aligned at the same x. Values (ON/OFF, price) right-column aligned — same color as relay state (green when ON, red when OFF). Unit `s/kWh` shown in small text alongside the price.
 
 White vertical lines in the bar chart mark the boundaries of each look-ahead window.
 
