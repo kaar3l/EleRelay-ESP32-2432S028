@@ -661,13 +661,13 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     char hbuf[12];
     snprintf(hbuf, sizeof(hbuf), "%dh/%dh", cheap_hours, hours_window);
     int hx = LCD_W - (int)strlen(hbuf) * 8 - 4;
-    draw_str(hx, 104, hbuf, C_YELLOW, C_BLACK, 1);
+    draw_str(hx, 107, hbuf, C_YELLOW, C_BLACK, 1);
     if (ap_mode) {
-        draw_str(4, 104, "AP: EleRelay-Setup  192.168.4.1", C_ORANGE, C_BLACK, 1);
+        draw_str(4, 107, "AP: EleRelay-Setup  192.168.4.1", C_ORANGE, C_BLACK, 1);
     } else {
         char wbuf[48];
         snprintf(wbuf, sizeof(wbuf), "WiFi: %s", ssid ? ssid : "");
-        draw_str(4, 104, wbuf, C_CYAN, C_BLACK, 1);
+        draw_str(4, 107, wbuf, C_CYAN, C_BLACK, 1);
     }
 
     /* ── Price bar chart (y 124..239) ────────────────────────────────── */
