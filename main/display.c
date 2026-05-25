@@ -637,7 +637,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     /* ── Relay status (y 26..99, large text) ────────────────────────── */
     const char *relay_str = relay_on ? "ON " : "OFF";
     uint16_t relay_col    = relay_on ? C_GREEN : C_RED;
-    draw_str(4, 28, DT("RELAY", "RELEE"), C_GRAY, C_BLACK, 2);
+    draw_str(4, 28, DT("RELAY", "RELEE"), C_WHITE, C_BLACK, 2);
     draw_str_16(4, 52, relay_str, relay_col, C_BLACK, 2);  /* 32 px tall */
 
     /* ── Current price (right half of relay area) ────────────────────── */
