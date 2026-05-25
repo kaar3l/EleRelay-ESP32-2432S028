@@ -1,7 +1,7 @@
 /*
  * Elering Smart Relay — ESP32-C3
  *
- * Boot: read NVS creds → try STA → fallback AP "ElereRelay-Setup"
+ * Boot: read NVS creds → try STA → fallback AP "EleRelay-Setup"
  * Pages: /          price table
  *        /wifi      change WiFi credentials
  *        /settings  runtime settings (window, cheap hours, relay invert,
@@ -59,7 +59,7 @@ static const char *TAG = "elerelay";
 #define HTTP_BUF_SIZE    (24 * 1024)
 #define WIFI_MAX_RETRY   10
 
-#define AP_SSID          "ElereRelay-Setup"
+#define AP_SSID          "EleRelay-Setup"
 #define NVS_NS           "elerelay"
 /* WiFi credential keys */
 #define NVS_KEY_SSID     "wifi_ssid"
@@ -666,7 +666,7 @@ static void update_relay(void)
              on ? "ON" : "OFF", is_cheap ? "cheap" : "expensive", s_relay_inv);
 
     /* MQTT publish relay state and current price */
-    mqtt_publish(s_mqtt_topic_relay, on ? "ON" : "OFF");
+    mqtt_publish(s_mqtt_topic_relay, on ? "1" : "0");
     if (found_slot) {
         char pbuf[16];
         snprintf(pbuf, sizeof(pbuf), "%.3f", cur_price);
@@ -761,7 +761,7 @@ static void send_page_head(httpd_req_t *req, const char *title)
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
-    send_page_head(req, T("ElereRelay \xe2\x80\x94 Settings", "ElereRelay \xe2\x80\x94 Seaded"));
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
     char chunk[512];
     snprintf(chunk, sizeof(chunk), "<h1>&#x2699;&#xFE0F; %s</h1>"
         "<form method='POST' action='/settings'>", T("Settings", "Seaded"));
@@ -1144,7 +1144,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
              ntp_server, tz_str, mqtt_en, mqtt_host, mqtt_port,
              mqtt_topic_p, mqtt_topic_r);
 
-    send_page_head(req, T("ElereRelay \xe2\x80\x94 Settings", "ElereRelay \xe2\x80\x94 Seaded"));
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
     char chunk[2048];
     snprintf(chunk, sizeof(chunk),
         "<h1>%s</h1>"
@@ -1191,7 +1191,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
 static void send_wifi_form(httpd_req_t *req, bool is_ap)
 {
-    send_page_head(req, T("ElereRelay \xe2\x80\x94 WiFi", "ElereRelay \xe2\x80\x94 WiFi"));
+    send_page_head(req, T("EleRelay \xe2\x80\x94 WiFi", "EleRelay \xe2\x80\x94 WiFi"));
     char buf[768];
     snprintf(buf, sizeof(buf),
         "<h1>&#x1F4F6; %s</h1>%s"
@@ -1249,7 +1249,7 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
     }
 
     esp_err_t err = nvs_save_creds(ssid, pass);
-    send_page_head(req, T("ElereRelay \xe2\x80\x94 WiFi", "ElereRelay \xe2\x80\x94 WiFi"));
+    send_page_head(req, T("EleRelay \xe2\x80\x94 WiFi", "EleRelay \xe2\x80\x94 WiFi"));
     if (err == ESP_OK) {
         char safe[CRED_LEN * 6] = {0};
         html_escape(ssid, safe, sizeof(safe));
@@ -1442,7 +1442,7 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 
 static esp_err_t ota_get_handler(httpd_req_t *req)
 {
-    send_page_head(req, "ElereRelay \xe2\x80\x94 OTA Update");
+    send_page_head(req, "EleRelay \xe2\x80\x94 OTA Update");
     httpd_resp_sendstr_chunk(req, "<h1>&#x1F4E6; OTA Firmware Update</h1>");
 
     /* Current partition info */
@@ -1892,7 +1892,7 @@ static void controller_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "ElereRelay booting (relay GPIO%d)", CONFIG_RELAY_GPIO);
+    ESP_LOGI(TAG, "EleRelay booting (relay GPIO%d)", CONFIG_RELAY_GPIO);
 
     /* Display + touch */
     display_init();

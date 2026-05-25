@@ -166,7 +166,7 @@ When enabled, the device publishes to an MQTT broker on every relay update (once
 | Server | *(empty)* | Broker hostname or IP address |
 | Port | 1883 | Broker TCP port |
 | Price topic | `elerelay/price` | Current slot price published as `c/kWh` (e.g. `12.345`) |
-| Relay state topic | `elerelay/relay` | Relay state published as `ON` or `OFF` |
+| Relay state topic | `elerelay/relay` | Relay state published as `1` (ON) or `0` (OFF) |
 
 Both messages are published with **retain = 1**, so a newly connected subscriber always receives the latest value immediately.
 
@@ -174,7 +174,7 @@ Example with Mosquitto:
 ```bash
 mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 # elerelay/price  8.720
-# elerelay/relay  ON
+# elerelay/relay  1
 ```
 
 ## Display layout
