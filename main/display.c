@@ -649,7 +649,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         uint16_t pc = relay_on ? C_GREEN : C_RED;
         draw_str(176, 28, relay_on ? DT("CHEAP","ODAV") : DT("EXPNS","KALLIS"), pc, C_BLACK, 2);
         draw_str_16(176, 52, pbuf, C_WHITE, C_BLACK, 2);  /* 32 px tall */
-        draw_str(176, 86, "/kWh", C_GRAY, C_BLACK, 1);
+        draw_str(176, 86, "/kWh", C_WHITE, C_BLACK, 1);
     }
 
     /* ── WiFi / AP info + window (y 102..121) ───────────────────────────── */
