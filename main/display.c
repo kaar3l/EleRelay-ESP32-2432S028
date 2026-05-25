@@ -634,22 +634,25 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     /* ── Separator ───────────────────────────────────────────────────── */
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
-    /* ── Relay status (y 26..99, large text) ────────────────────────── */
+    /* ── Relay status (y 26..99) ─────────────────────────────────────── */
+    /* col1=4 (labels), col2=148 (values) — both lines share same x stops */
+    const int col2 = 200;
     const char *relay_str = relay_on ? "ON " : "OFF";
     uint16_t relay_col    = relay_on ? C_GREEN : C_RED;
-    draw_str(4, 28, DT("RELAY", "RELEE"), C_WHITE, C_BLACK, 2);
-    draw_str_16(4, 52, relay_str, relay_col, C_BLACK, 2);  /* 32 px tall */
+    draw_str(4,    34, DT("RELAY", "RELEE"), C_WHITE,    C_BLACK, 3);
+    draw_str(col2, 34, relay_str,            relay_col,  C_BLACK, 3);
 
-    /* ── Current price (right half of relay area) ────────────────────── */
+    /* Line 2: HIND (col1) + 0.0s (col2) + s/kWh smaller */
     if (count > 0 && cur_idx >= 0 && cur_idx < count) {
         const disp_slot_t *cur = &slots[cur_idx];
-        float price_c = cur->price_eur_mwh / 10.0f;  /* EUR/MWh → c/kWh */
-        char pbuf[20];
-        snprintf(pbuf, sizeof(pbuf), "%.1fc", price_c);
-        uint16_t pc = relay_on ? C_GREEN : C_RED;
-        draw_str(176, 28, relay_on ? DT("CHEAP","ODAV") : DT("EXPNS","KALLIS"), pc, C_BLACK, 2);
-        draw_str_16(176, 52, pbuf, C_WHITE, C_BLACK, 2);  /* 32 px tall */
-        draw_str(176, 86, "/kWh", C_WHITE, C_BLACK, 1);
+        float price_c = cur->price_eur_mwh / 10.0f;
+        char pbuf[12];
+        snprintf(pbuf, sizeof(pbuf), "%.1f", price_c);
+        draw_str(4,    67, DT("PRICE", "HIND"), C_WHITE, C_BLACK, 3);
+        draw_str(col2, 67, pbuf,                relay_col, C_BLACK, 3);
+        int unit_x = col2 + (int)strlen(pbuf) * 8 * 3;
+        draw_str(unit_x, 67, "s/",    C_WHITE, C_BLACK, 1);
+        draw_str(unit_x, 83, "kWh",  C_WHITE, C_BLACK, 1);
     }
 
     /* ── WiFi / AP info + window (y 102..121) ───────────────────────────── */
