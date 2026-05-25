@@ -646,8 +646,8 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         float price_c = cur->price_eur_mwh / 10.0f;  /* EUR/MWh → c/kWh */
         char pbuf[20];
         snprintf(pbuf, sizeof(pbuf), "%.1fc", price_c);
-        uint16_t pc = cur->is_cheap ? C_GREEN : C_RED;
-        draw_str(176, 28, cur->is_cheap ? DT("CHEAP","ODAV") : DT("EXPNS","KALLIS"), pc, C_BLACK, 2);
+        uint16_t pc = relay_on ? C_GREEN : C_RED;
+        draw_str(176, 28, relay_on ? DT("CHEAP","ODAV") : DT("EXPNS","KALLIS"), pc, C_BLACK, 2);
         draw_str_16(176, 52, pbuf, C_WHITE, C_BLACK, 2);  /* 32 px tall */
         draw_str(176, 86, "/kWh", C_GRAY, C_BLACK, 1);
     }
@@ -807,7 +807,7 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
         char lbuf[28];
         snprintf(lbuf, sizeof(lbuf), "Alati valjas > %.1fc:", aoff_lim_mwh / 10.0f);
         draw_str(4, CFG_AOFF_Y - 8, lbuf, C_YELLOW, C_BLACK, 1);
-        uint16_t tcol = aoff_en ? C_DKRED : C_DKGRAY;
+        uint16_t tcol = aoff_en ? C_DKGREEN : C_DKGRAY;
         draw_btn(CFG_TOG_X0, CFG_AOFF_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
                  aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
