@@ -9,7 +9,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 - **Always-ON price limit** — force relay ON whenever the spot price is at or below a set threshold (overrides normal schedule)
 - **Always-OFF price limit** — force relay OFF whenever the spot price is at or above a set threshold (highest priority; overrides always-ON and min-run)
 - ILI9341 320×240 colour display showing relay state, current price, and a price bar chart
-- **Touchscreen support** — tap the display to open a settings page; adjust window size, cheap hours, minimum run time, and price limit toggles directly on the device; auto-closes after 60 s of inactivity
+- **Touchscreen support** — tap the display to open a 3-page settings screen; adjust window size, cheap hours, minimum run time, always-ON/OFF thresholds, and enable/disable price limits directly on the device; auto-closes after 60 s of inactivity
 - **English / Estonian UI** — language selector on the `/settings` page; applies to both the web interface and the LCD
 - Captive-portal style web UI (no app needed) for all settings
 - All settings stored in NVS — survive reboots
@@ -181,10 +181,10 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 
 ```
 ┌──────────────────────────────────┐
-│ EleRelay        Thu 16 Apr 13:42 │  ← header
+│ 26.05.2026          14:30:55     │  ← header: date (DD.MM.YYYY) + HH:MM:SS
 ├──────────────────────────────────┤
-│ RELEE               ON           │  ← relay label + state (green=ON, red=OFF)
-│ HIND               8.7 s/        │  ← price label + current price (same color)
+│ RELAY               ON           │  ← relay label + state (green=ON, red=OFF)
+│ PRICE              8.7 s/        │  ← price label + current price (same color)
 │                        kWh       │
 ├──────────────────────────────────┤
 │ WiFi: MyNetwork        6h/12h    │  ← WiFi info + window setting
@@ -193,25 +193,36 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 └──────────────────────────────────┘
 ```
 
-Labels (RELEE, HIND) left-aligned at the same x. Values (ON/OFF, price) right-column aligned — same color as relay state (green when ON, red when OFF). Unit `s/kWh` shown in small text alongside the price.
+Labels (RELAY/RELEE, PRICE/HIND) left-aligned at the same x. Values (ON/OFF, price) right-column aligned — same color as relay state (green when ON, red when OFF). Unit `s/kWh` shown in small text alongside the price.
 
 White vertical lines in the bar chart mark the boundaries of each look-ahead window.
 
 ### LCD touch configuration
 
-Tap anywhere on the display to open the on-screen settings page. Use the **−** and **+** buttons to adjust:
+Tap anywhere on the display to open the on-screen settings (3 pages). Navigate with **[<]** / **[>]** buttons; tap **X** in the top-right corner to close without saving. The screen closes automatically after **60 seconds of inactivity**.
+
+**Page 1/3 — Relay schedule**
 
 | Row | Control | Notes |
 |-----|---------|-------|
 | Window size | − / + buttons, 1 h step | Range 2–24 h |
 | Cheap hours | − / + buttons, 1 h step | Range 1 h … window−1 |
 | Min. run time | − / + buttons, 15 min step | 0 (OFF) – 480 min |
-| Alati sees (Always ON) | toggle button | Green = enabled; shows limit in c/kWh |
-| Alati valjas (Always OFF) | toggle button | Red = enabled; shows limit in c/kWh |
 
-Price limit thresholds are set on the `/settings` web page. The LCD toggles only enable/disable them.
+**Page 2/3 — Price limits**
 
-Tap **SAVE** to persist all values to NVS, or **✕** to close without saving. The page closes automatically after **60 seconds of inactivity**.
+| Row | Control | Notes |
+|-----|---------|-------|
+| Always ON below | toggle button | Green = enabled |
+| Always ON — price | − / + buttons, 0.1 c/kWh step | Force relay ON when price ≤ this value |
+| Always OFF above | toggle button | Red = enabled |
+| Always OFF — price | − / + buttons, 0.1 c/kWh step | Force relay OFF when price ≥ this value (highest priority) |
+
+**Page 3/3 — Info**
+
+Read-only page showing app name, version, and build timestamp.
+
+Tap **SAVE** on page 1 or 2 to persist all values to NVS.
 
 ## Compile-time defaults (menuconfig)
 
