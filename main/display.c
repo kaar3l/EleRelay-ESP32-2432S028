@@ -746,17 +746,17 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 #define CFG_NEXT_BTN_X 260   /* [>] x=260..319 */
 #define CFG_NAV_BTN_W   60
 /* Page 1: label at (btn_y - 8), gap=16px between items */
-#define CFG_WIN_Y      49   /* label@41 btn@49 end@75  */
-#define CFG_CHE_Y      99   /* label@91 btn@99 end@125 */
-#define CFG_MIN_Y     149   /* label@141 btn@149 end@175 */
+#define CFG_WIN_Y      55   /* label@39(scale2) btn@55 end@81  */
+#define CFG_CHE_Y     111   /* label@95(scale2) btn@111 end@137 */
+#define CFG_MIN_Y     167   /* label@151(scale2) btn@167 end@193 */
 #define CFG1_SAVE_Y   208   /* pinned to LCD bottom: 240-32=208 */
 /* Page 2: label right above toggle/btn, gap=9px between rows */
-#define CFG2_AON_LBL_Y   34  /* toggle@42 end@64 */
-#define CFG2_AON_TOG_Y   42
-#define CFG2_AON_PRC_Y   81  /* label@73 btn@81 end@107 */
-#define CFG2_AOFF_LBL_Y 116  /* toggle@124 end@146 */
-#define CFG2_AOFF_TOG_Y 124
-#define CFG2_AOFF_PRC_Y 163  /* label@155 btn@163 end@189 */
+#define CFG2_AON_LBL_Y   28  /* scale2 label@28 end@44; gap=4 */
+#define CFG2_AON_TOG_Y   48  /* toggle@48 end@70 */
+#define CFG2_AON_PRC_Y   90  /* label@74 btn@90 end@116 */
+#define CFG2_AOFF_LBL_Y 120  /* scale2 label@120 end@136 */
+#define CFG2_AOFF_TOG_Y 140  /* toggle@140 end@162 */
+#define CFG2_AOFF_PRC_Y 182  /* label@166 btn@182 end@208=SAVE */
 #define CFG2_SAVE_Y     208  /* pinned to LCD bottom: 240-32=208 */
 
 static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
@@ -780,7 +780,7 @@ static void render_config_page1(int cheap_hours, int hours_window, int min_run_m
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
     /* Window size row */
-    draw_str(4, CFG_WIN_Y - 8, DT("Window size:", "Akna suurus:"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG_WIN_Y - 16, DT("Window size:", "Akna suurus:"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     char vbuf[16];
@@ -792,7 +792,7 @@ static void render_config_page1(int cheap_hours, int hours_window, int min_run_m
     }
 
     /* Cheap hours row */
-    draw_str(4, CFG_CHE_Y - 8, DT("Cheap hours:", "Odavad tunnid:"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG_CHE_Y - 16, DT("Cheap hours:", "Odavad tunnid:"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_CHE_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     snprintf(vbuf, sizeof(vbuf), "%dh", cheap_hours);
@@ -803,7 +803,7 @@ static void render_config_page1(int cheap_hours, int hours_window, int min_run_m
     }
 
     /* Min. run time row */
-    draw_str(4, CFG_MIN_Y - 8, DT("Min. run time:", "Min. kaitusaeg:"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG_MIN_Y - 16, DT("Min. run time:", "Min. kaitusaeg:"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_MIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     if (min_run_minutes == 0) {
@@ -834,13 +834,13 @@ static void render_config_page2(bool aon_en, int aon_lim_mwh,
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
     /* Always ON section */
-    draw_str(4, CFG2_AON_LBL_Y, DT("Always ON below:", "Alati sees alla:"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG2_AON_LBL_Y, DT("Always ON below:", "Alati sees alla:"), C_YELLOW, C_BLACK, 2);
     {
         uint16_t tcol = aon_en ? C_DKGREEN : C_DKGRAY;
         draw_btn(CFG_TOG_X0, CFG2_AON_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
                  aon_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
-    draw_str(4, CFG2_AON_PRC_Y - 8, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG2_AON_PRC_Y - 16, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG2_AON_PRC_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG2_AON_PRC_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     {
@@ -852,13 +852,13 @@ static void render_config_page2(bool aon_en, int aon_lim_mwh,
     }
 
     /* Always OFF section */
-    draw_str(4, CFG2_AOFF_LBL_Y, DT("Always OFF above:", "Alati valjas yle:"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG2_AOFF_LBL_Y, DT("Always OFF above:", "Alati valjas yle:"), C_YELLOW, C_BLACK, 2);
     {
         uint16_t tcol = aoff_en ? C_DKGREEN : C_DKGRAY;
         draw_btn(CFG_TOG_X0, CFG2_AOFF_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
                  aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
-    draw_str(4, CFG2_AOFF_PRC_Y - 8, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG2_AOFF_PRC_Y - 16, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG2_AOFF_PRC_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG2_AOFF_PRC_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     {
