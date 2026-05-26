@@ -151,6 +151,9 @@ static int               s_cfg_cheap    = 0;
 static int               s_cfg_min_run  = 0;
 static bool              s_cfg_aon_en   = false;
 static bool              s_cfg_aoff_en  = false;
+static int               s_cfg_aon_lim  = 0;
+static int               s_cfg_aoff_lim = 200;
+static int               s_cfg_page     = 0;
 
 /* ── NVS: WiFi credentials ───────────────────────────────────────────────── */
 
@@ -1764,73 +1767,95 @@ static void touch_task(void *arg)
 
         if (s_screen == SCREEN_MAIN) {
             xSemaphoreTake(s_mutex, portMAX_DELAY);
-            s_cfg_window  = s_hours_window;
-            s_cfg_cheap   = s_cheap_hours;
-            s_cfg_min_run = s_min_run_minutes;
-            s_cfg_aon_en  = s_always_on_en;
-            s_cfg_aoff_en = s_always_off_en;
+            s_cfg_window   = s_hours_window;
+            s_cfg_cheap    = s_cheap_hours;
+            s_cfg_min_run  = s_min_run_minutes;
+            s_cfg_aon_en   = s_always_on_en;
+            s_cfg_aoff_en  = s_always_off_en;
+            s_cfg_aon_lim  = s_always_on_limit;
+            s_cfg_aoff_lim = s_always_off_limit;
             xSemaphoreGive(s_mutex);
+            s_cfg_page = 0;
             s_screen = SCREEN_CONFIG;
             cfg_entered_at = xTaskGetTickCount();
-            display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                s_cfg_aon_en, s_always_on_limit,
-                                s_cfg_aoff_en, s_always_off_limit);
+            {
+                const esp_app_desc_t *d = esp_app_get_description();
+                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
+                                    s_cfg_aon_en, s_cfg_aon_lim,
+                                    s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page,
+                                    d->version, d->date, d->time);
+            }
         } else {
             cfg_entered_at = xTaskGetTickCount();  /* any touch resets the timer */
-            int btn = display_config_hittest(tx, ty);
+            int btn = display_config_hittest(tx, ty, s_cfg_page);
+#define REDRAW() do { \
+    const esp_app_desc_t *_d = esp_app_get_description(); \
+    display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run, \
+                        s_cfg_aon_en, s_cfg_aon_lim, \
+                        s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, \
+                        _d->version, _d->date, _d->time); \
+} while(0)
             switch (btn) {
             case DISP_CFG_CLOSE:
                 s_screen = SCREEN_MAIN;
                 update_display();
                 break;
+            case DISP_CFG_NEXT_PAGE:
+                if (s_cfg_page < 2) s_cfg_page++;
+                REDRAW();
+                break;
+            case DISP_CFG_PREV_PAGE:
+                if (s_cfg_page > 0) s_cfg_page--;
+                REDRAW();
+                break;
             case DISP_CFG_WIN_DEC:
                 if (s_cfg_window > 2) s_cfg_window--;
                 if (s_cfg_cheap >= s_cfg_window) s_cfg_cheap = s_cfg_window - 1;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_WIN_INC:
                 if (s_cfg_window < 24) s_cfg_window++;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_CHE_DEC:
                 if (s_cfg_cheap > 1) s_cfg_cheap--;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_CHE_INC:
                 if (s_cfg_cheap < s_cfg_window - 1) s_cfg_cheap++;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_MIN_DEC:
                 if (s_cfg_min_run > 0) s_cfg_min_run -= 15;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_MIN_INC:
                 if (s_cfg_min_run < 480) s_cfg_min_run += 15;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_AON_TOG:
                 s_cfg_aon_en = !s_cfg_aon_en;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
                 break;
             case DISP_CFG_AOFF_TOG:
                 s_cfg_aoff_en = !s_cfg_aoff_en;
-                display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
-                                    s_cfg_aon_en, s_always_on_limit,
-                                    s_cfg_aoff_en, s_always_off_limit);
+                REDRAW();
+                break;
+            case DISP_CFG_AON_DEC:
+                if (s_cfg_aon_lim >= 10) s_cfg_aon_lim -= 10;
+                REDRAW();
+                break;
+            case DISP_CFG_AON_INC:
+                if (s_cfg_aon_lim <= 1990) s_cfg_aon_lim += 10;
+                REDRAW();
+                break;
+            case DISP_CFG_AOFF_DEC:
+                if (s_cfg_aoff_lim >= 10) s_cfg_aoff_lim -= 10;
+                REDRAW();
+                break;
+            case DISP_CFG_AOFF_INC:
+                if (s_cfg_aoff_lim <= 1990) s_cfg_aoff_lim += 10;
+                REDRAW();
                 break;
             case DISP_CFG_SAVE:
                 xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -1839,6 +1864,8 @@ static void touch_task(void *arg)
                 s_min_run_minutes = s_cfg_min_run;
                 s_always_on_en    = s_cfg_aon_en;
                 s_always_off_en   = s_cfg_aoff_en;
+                s_always_on_limit  = s_cfg_aon_lim;
+                s_always_off_limit = s_cfg_aoff_lim;
                 mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);
                 xSemaphoreGive(s_mutex);
                 nvs_save_settings();
@@ -1848,6 +1875,7 @@ static void touch_task(void *arg)
                 break;
             default: break;
             }
+#undef REDRAW
         }
     }
 }

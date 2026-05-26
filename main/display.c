@@ -718,24 +718,46 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 
 /* ── Config page ─────────────────────────────────────────────────────────── */
 
-/* Button regions — shared between render and hittest */
+/*
+ * Layout arithmetic (screen 320×240, header+sep = 25px, available = 215px):
+ *
+ * Page 1 — 4 items: 3×(lbl8+btn26)=102 + save32 = 134px
+ *   5 gaps of 16px = 80px, +1px bottom → all gaps ~equal
+ *   item_y = 25 + 16 + cumulative
+ *
+ * Page 2 — 5 items: (lbl8+tog22)+(lbl8+btn26)+(lbl8+tog22)+(lbl8+btn26)+save32
+ *   = 30+34+30+34+32 = 160px
+ *   6 gaps of 9px = 54px, +1px bottom → all gaps ~equal
+ *   item_y = 25 + 9 + cumulative
+ */
 #define CFG_BTN_W      60
-#define CFG_BTN_H      26    /* reduced from 36 to fit 5 rows */
-#define CFG_TOG_H      22    /* always-on/off toggle button height */
-#define CFG_TOG_X0     20    /* toggle button left edge */
-#define CFG_TOG_X1    299    /* toggle button right edge */
-#define CFG_DEC_X      20    /* left edge of [−] buttons */
-#define CFG_INC_X     240    /* left edge of [+] buttons */
-#define CFG_WIN_Y      33    /* top of window row */
-#define CFG_CHE_Y      71    /* top of cheap-hours row */
-#define CFG_MIN_Y     109    /* top of min-run row */
-#define CFG_AON_Y     147    /* top of always-on toggle */
-#define CFG_AOFF_Y    181    /* top of always-off toggle */
+#define CFG_BTN_H      26
+#define CFG_TOG_H      22
+#define CFG_TOG_X0     20
+#define CFG_TOG_X1    299
+#define CFG_DEC_X      20
+#define CFG_INC_X     240
 #define CFG_SAVE_X1    60
 #define CFG_SAVE_X2   259
-#define CFG_SAVE_Y1   207
-#define CFG_SAVE_Y2   239
+#define CFG_SAVE_H     32
 #define CFG_CLOSE_X1  282
+/* Page navigation buttons (bottom row, flanking Save) */
+#define CFG_PREV_BTN_X   0   /* [<] x=0..59  */
+#define CFG_NEXT_BTN_X 260   /* [>] x=260..319 */
+#define CFG_NAV_BTN_W   60
+/* Page 1: label at (btn_y - 8), gap=16px between items */
+#define CFG_WIN_Y      49   /* label@41 btn@49 end@75  */
+#define CFG_CHE_Y      99   /* label@91 btn@99 end@125 */
+#define CFG_MIN_Y     149   /* label@141 btn@149 end@175 */
+#define CFG1_SAVE_Y   208   /* pinned to LCD bottom: 240-32=208 */
+/* Page 2: label right above toggle/btn, gap=9px between rows */
+#define CFG2_AON_LBL_Y   34  /* toggle@42 end@64 */
+#define CFG2_AON_TOG_Y   42
+#define CFG2_AON_PRC_Y   81  /* label@73 btn@81 end@107 */
+#define CFG2_AOFF_LBL_Y 116  /* toggle@124 end@146 */
+#define CFG2_AOFF_TOG_Y 124
+#define CFG2_AOFF_PRC_Y 163  /* label@155 btn@163 end@189 */
+#define CFG2_SAVE_Y     208  /* pinned to LCD bottom: 240-32=208 */
 
 static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
 {
@@ -748,19 +770,17 @@ static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
     draw_str(x + (w - tw) / 2, y + (h - 16) / 2, text, C_WHITE, bg, 2);
 }
 
-static void render_config_page(int cheap_hours, int hours_window, int min_run_minutes,
-                                bool aon_en, int aon_lim_mwh,
-                                bool aoff_en, int aoff_lim_mwh)
+static void render_config_page1(int cheap_hours, int hours_window, int min_run_minutes)
 {
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 8, DT("Config", "Seaded"), C_WHITE, C_NAVY, 1);
+    draw_str(4, 8, DT("Config 1/3", "Seaded 1/3"), C_WHITE, C_NAVY, 1);
     fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
-    draw_str(CFG_CLOSE_X1 + 10, 8, "X", C_WHITE, C_DKRED, 1);
+    draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
     /* Window size row */
-    draw_str(4, 25, DT("Window size:", "Akna suurus:"), C_YELLOW, C_BLACK, 1);
+    draw_str(4, CFG_WIN_Y - 8, DT("Window size:", "Akna suurus:"), C_YELLOW, C_BLACK, 1);
     draw_btn(CFG_DEC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG_WIN_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     char vbuf[16];
@@ -797,66 +817,167 @@ static void render_config_page(int cheap_hours, int hours_window, int min_run_mi
         draw_str(vx, CFG_MIN_Y + (CFG_BTN_H - 16) / 2, vbuf, C_WHITE, C_BLACK, 2);
     }
 
-    /* Always ON row: label shows current limit, button toggles enable */
+    /* Bottom row: [save] + [>] next page */
+    draw_btn(CFG_SAVE_X1, CFG1_SAVE_Y, CFG_SAVE_X2 - CFG_SAVE_X1, CFG_SAVE_H,
+             DT("SAVE", "SALVESTA"), C_DKGREEN);
+    draw_btn(CFG_NEXT_BTN_X, CFG1_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, ">", C_DKGRAY);
+}
+
+static void render_config_page2(bool aon_en, int aon_lim_mwh,
+                                 bool aoff_en, int aoff_lim_mwh)
+{
+    /* Header */
+    fill_rect(0, 0, LCD_W, 24, C_NAVY);
+    draw_str(4, 8, DT("Config 2/3", "Seaded 2/3"), C_WHITE, C_NAVY, 1);
+    fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
+    draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
+    fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
+
+    /* Always ON section */
+    draw_str(4, CFG2_AON_LBL_Y, DT("Always ON below:", "Alati sees alla:"), C_YELLOW, C_BLACK, 1);
     {
-        char lbuf[28];
-        snprintf(lbuf, sizeof(lbuf), "Alati sees < %.1fc:", aon_lim_mwh / 10.0f);
-        draw_str(4, CFG_AON_Y - 8, lbuf, C_YELLOW, C_BLACK, 1);
         uint16_t tcol = aon_en ? C_DKGREEN : C_DKGRAY;
-        draw_btn(CFG_TOG_X0, CFG_AON_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
+        draw_btn(CFG_TOG_X0, CFG2_AON_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
                  aon_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
-
-    /* Always OFF row: label shows current limit, button toggles enable */
+    draw_str(4, CFG2_AON_PRC_Y - 8, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 1);
+    draw_btn(CFG_DEC_X, CFG2_AON_PRC_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
+    draw_btn(CFG_INC_X, CFG2_AON_PRC_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     {
-        char lbuf[28];
-        snprintf(lbuf, sizeof(lbuf), "Alati valjas > %.1fc:", aoff_lim_mwh / 10.0f);
-        draw_str(4, CFG_AOFF_Y - 8, lbuf, C_YELLOW, C_BLACK, 1);
-        uint16_t tcol = aoff_en ? C_DKGREEN : C_DKGRAY;
-        draw_btn(CFG_TOG_X0, CFG_AOFF_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
-                 aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
+        char pvbuf[10];
+        snprintf(pvbuf, sizeof(pvbuf), "%.1f", aon_lim_mwh / 10.0f);
+        int vw = (int)strlen(pvbuf) * 16;
+        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
+        draw_str(vx, CFG2_AON_PRC_Y + (CFG_BTN_H - 16) / 2, pvbuf, C_WHITE, C_BLACK, 2);
     }
 
-    /* Save button */
-    draw_btn(CFG_SAVE_X1, CFG_SAVE_Y1,
-             CFG_SAVE_X2 - CFG_SAVE_X1, CFG_SAVE_Y2 - CFG_SAVE_Y1,
+    /* Always OFF section */
+    draw_str(4, CFG2_AOFF_LBL_Y, DT("Always OFF above:", "Alati valjas yle:"), C_YELLOW, C_BLACK, 1);
+    {
+        uint16_t tcol = aoff_en ? C_DKGREEN : C_DKGRAY;
+        draw_btn(CFG_TOG_X0, CFG2_AOFF_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
+                 aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
+    }
+    draw_str(4, CFG2_AOFF_PRC_Y - 8, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 1);
+    draw_btn(CFG_DEC_X, CFG2_AOFF_PRC_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
+    draw_btn(CFG_INC_X, CFG2_AOFF_PRC_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
+    {
+        char pvbuf[10];
+        snprintf(pvbuf, sizeof(pvbuf), "%.1f", aoff_lim_mwh / 10.0f);
+        int vw = (int)strlen(pvbuf) * 16;
+        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
+        draw_str(vx, CFG2_AOFF_PRC_Y + (CFG_BTN_H - 16) / 2, pvbuf, C_WHITE, C_BLACK, 2);
+    }
+
+    /* Bottom row: [<] + [save] + [>] */
+    draw_btn(CFG_PREV_BTN_X, CFG2_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, "<", C_DKGRAY);
+    draw_btn(CFG_SAVE_X1, CFG2_SAVE_Y, CFG_SAVE_X2 - CFG_SAVE_X1, CFG_SAVE_H,
              DT("SAVE", "SALVESTA"), C_DKGREEN);
+    draw_btn(CFG_NEXT_BTN_X, CFG2_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, ">", C_DKGRAY);
+}
+
+static void render_config_page3(const char *app_ver, const char *build_date,
+                                 const char *build_time)
+{
+    /* Header */
+    fill_rect(0, 0, LCD_W, 24, C_NAVY);
+    draw_str(4, 8, DT("Config 3/3", "Seaded 3/3"), C_WHITE, C_NAVY, 1);
+    fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
+    draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
+    fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
+
+    /* App name centered, scale 2 */
+    {
+        const char *name = "EleRelay";
+        int nx = (LCD_W - (int)strlen(name) * 16) / 2;
+        draw_str(nx, 55, name, C_CYAN, C_BLACK, 2);
+    }
+
+    /* Version centered, scale 2 */
+    if (app_ver && *app_ver) {
+        char vbuf[40];
+        snprintf(vbuf, sizeof(vbuf), "v%s", app_ver);
+        int vx = (LCD_W - (int)strlen(vbuf) * 16) / 2;
+        draw_str(vx, 85, vbuf, C_WHITE, C_BLACK, 2);
+    }
+
+    /* Build date/time, scale 1 */
+    if (build_date && build_time) {
+        char dbuf[40];
+        snprintf(dbuf, sizeof(dbuf), "Built: %s %s", build_date, build_time);
+        int dx = (LCD_W - (int)strlen(dbuf) * 8) / 2;
+        draw_str(dx, 125, dbuf, C_GRAY, C_BLACK, 1);
+    }
+
+    /* Bottom row: [<] back only */
+    draw_btn(0, CFG2_SAVE_Y, LCD_W, CFG_SAVE_H, "<", C_DKGRAY);
 }
 
 void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           bool aon_en, int aon_lim_mwh,
-                          bool aoff_en, int aoff_lim_mwh)
+                          bool aoff_en, int aoff_lim_mwh, int page,
+                          const char *app_ver, const char *build_date, const char *build_time)
 {
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
         memset(s_fb, 0, LCD_W * rows * 2);
-        render_config_page(cheap_hours, hours_window, min_run_minutes,
-                           aon_en, aon_lim_mwh, aoff_en, aoff_lim_mwh);
+        if (page == 2)
+            render_config_page3(app_ver, build_date, build_time);
+        else if (page == 1)
+            render_config_page2(aon_en, aon_lim_mwh, aoff_en, aoff_lim_mwh);
+        else
+            render_config_page1(cheap_hours, hours_window, min_run_minutes);
         flush_stripe(rows);
     }
     s_sy0 = 0;
 }
 
-int display_config_hittest(int tx, int ty)
+int display_config_hittest(int tx, int ty, int page)
 {
     if (tx >= CFG_CLOSE_X1 && ty <= 23) return DISP_CFG_CLOSE;
-    if (tx >= CFG_DEC_X && tx < CFG_DEC_X + CFG_BTN_W) {
-        if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_DEC;
-        if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_DEC;
-        if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_DEC;
+
+    if (page == 0) {
+        if (tx >= CFG_NEXT_BTN_X && tx < CFG_NEXT_BTN_X + CFG_NAV_BTN_W &&
+            ty >= CFG1_SAVE_Y && ty < CFG1_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_NEXT_PAGE;
+        if (tx >= CFG_DEC_X && tx < CFG_DEC_X + CFG_BTN_W) {
+            if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_DEC;
+            if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_DEC;
+            if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_DEC;
+        }
+        if (tx >= CFG_INC_X && tx < CFG_INC_X + CFG_BTN_W) {
+            if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_INC;
+            if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_INC;
+            if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_INC;
+        }
+        if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
+            ty >= CFG1_SAVE_Y && ty < CFG1_SAVE_Y + CFG_SAVE_H) return DISP_CFG_SAVE;
+    } else if (page == 1) {
+        if (tx >= CFG_PREV_BTN_X && tx < CFG_PREV_BTN_X + CFG_NAV_BTN_W &&
+            ty >= CFG2_SAVE_Y && ty < CFG2_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_PREV_PAGE;
+        if (tx >= CFG_NEXT_BTN_X && tx < CFG_NEXT_BTN_X + CFG_NAV_BTN_W &&
+            ty >= CFG2_SAVE_Y && ty < CFG2_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_NEXT_PAGE;
+        if (tx >= CFG_TOG_X0 && tx <= CFG_TOG_X1) {
+            if (ty >= CFG2_AON_TOG_Y  && ty < CFG2_AON_TOG_Y  + CFG_TOG_H) return DISP_CFG_AON_TOG;
+            if (ty >= CFG2_AOFF_TOG_Y && ty < CFG2_AOFF_TOG_Y + CFG_TOG_H) return DISP_CFG_AOFF_TOG;
+        }
+        if (tx >= CFG_DEC_X && tx < CFG_DEC_X + CFG_BTN_W) {
+            if (ty >= CFG2_AON_PRC_Y  && ty < CFG2_AON_PRC_Y  + CFG_BTN_H) return DISP_CFG_AON_DEC;
+            if (ty >= CFG2_AOFF_PRC_Y && ty < CFG2_AOFF_PRC_Y + CFG_BTN_H) return DISP_CFG_AOFF_DEC;
+        }
+        if (tx >= CFG_INC_X && tx < CFG_INC_X + CFG_BTN_W) {
+            if (ty >= CFG2_AON_PRC_Y  && ty < CFG2_AON_PRC_Y  + CFG_BTN_H) return DISP_CFG_AON_INC;
+            if (ty >= CFG2_AOFF_PRC_Y && ty < CFG2_AOFF_PRC_Y + CFG_BTN_H) return DISP_CFG_AOFF_INC;
+        }
+        if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
+            ty >= CFG2_SAVE_Y && ty < CFG2_SAVE_Y + CFG_SAVE_H) return DISP_CFG_SAVE;
+    } else { /* page 2: info only */
+        if (ty >= CFG2_SAVE_Y && ty < CFG2_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_PREV_PAGE;
     }
-    if (tx >= CFG_INC_X && tx < CFG_INC_X + CFG_BTN_W) {
-        if (ty >= CFG_WIN_Y && ty < CFG_WIN_Y + CFG_BTN_H) return DISP_CFG_WIN_INC;
-        if (ty >= CFG_CHE_Y && ty < CFG_CHE_Y + CFG_BTN_H) return DISP_CFG_CHE_INC;
-        if (ty >= CFG_MIN_Y && ty < CFG_MIN_Y + CFG_BTN_H) return DISP_CFG_MIN_INC;
-    }
-    if (tx >= CFG_TOG_X0 && tx <= CFG_TOG_X1) {
-        if (ty >= CFG_AON_Y  && ty < CFG_AON_Y  + CFG_TOG_H) return DISP_CFG_AON_TOG;
-        if (ty >= CFG_AOFF_Y && ty < CFG_AOFF_Y + CFG_TOG_H) return DISP_CFG_AOFF_TOG;
-    }
-    if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
-        ty >= CFG_SAVE_Y1 && ty <= CFG_SAVE_Y2) return DISP_CFG_SAVE;
     return -1;
 }
 
