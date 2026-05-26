@@ -1865,8 +1865,13 @@ static void controller_task(void *arg)
     update_display();
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(60000));   /* tick every minute */
+        vTaskDelay(pdMS_TO_TICKS(1000));    /* tick every second for clock */
         time_t now; time(&now);
+
+        update_display();   /* refresh clock every second */
+
+        if (now % 60 != 0) continue;   /* minute-level work below */
+
         struct tm ti; localtime_r(&now, &ti);
 
         bool stale     = (s_hour_count == 0 || now - s_last_fetch > 25 * 3600);
@@ -1884,7 +1889,6 @@ static void controller_task(void *arg)
                 ESP_LOGW(TAG, "Fetch failed, keeping old data");
         }
         update_relay();
-        update_display();   /* refresh clock + price bar every minute */
     }
 }
 

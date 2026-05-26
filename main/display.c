@@ -612,9 +612,9 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     if (now > 0) {
         struct tm lt;
         localtime_r(&now, &lt);
-        char tbuf[8];
-        snprintf(tbuf, sizeof(tbuf), "%02d:%02d", lt.tm_hour, lt.tm_min);
-        draw_str(LCD_W - 5 * 16 - 4, 4, tbuf, C_WHITE, C_NAVY, 2);
+        char tbuf[9];
+        snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
+        draw_str(LCD_W - 8 * 8 - 4, 8, tbuf, C_WHITE, C_NAVY, 1);
 
         static const char *days_en[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
         static const char *days_et[] = {"Puh","Esm","Tei","Kol","Nel","Ree","Lau"};
