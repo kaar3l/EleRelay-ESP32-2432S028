@@ -613,7 +613,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         localtime_r(&now, &lt);
         char tbuf[9];
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
-        draw_str(LCD_W - 8 * 16 - 4, 4, tbuf, C_WHITE, C_NAVY, 2);
+        draw_str(LCD_W - 8 * 16 - 4, 4, tbuf, C_YELLOW, C_NAVY, 2);
 
         char dbuf[11]; /* "DD.MM.YYYY\0" */
         int day  = lt.tm_mday;
@@ -630,7 +630,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         dbuf[8] = '0' + (year /   10) % 10;
         dbuf[9] = '0' +  year         % 10;
         dbuf[10] = '\0';
-        draw_str(4, 4, dbuf, C_WHITE, C_NAVY, 2);
+        draw_str(4, 4, dbuf, C_YELLOW, C_NAVY, 2);
     }
 
     /* ── Separator ───────────────────────────────────────────────────── */
@@ -883,9 +883,10 @@ static void render_config_page2(bool aon_en, int aon_lim_mwh,
     draw_btn(CFG_NEXT_BTN_X, CFG2_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, ">", C_DKGRAY);
 }
 
-static void render_config_page3(const char *app_ver, const char *build_date,
-                                 const char *build_time)
+static void render_config_page3(const disp_sysinfo_t *info)
 {
+    char buf[48];
+
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
     draw_str(4, 8, DT("Config 3/3", "Seaded 3/3"), C_WHITE, C_NAVY, 1);
@@ -893,28 +894,86 @@ static void render_config_page3(const char *app_ver, const char *build_date,
     draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
-    /* App name centered, scale 2 */
+    /* ── App info block ── */
     {
         const char *name = "EleRelay";
         int nx = (LCD_W - (int)strlen(name) * 16) / 2;
-        draw_str(nx, 55, name, C_CYAN, C_BLACK, 2);
+        draw_str(nx, 31, name, C_CYAN, C_BLACK, 2);
+    }
+    if (info->app_ver && *info->app_ver) {
+        snprintf(buf, sizeof(buf), "v%s", info->app_ver);
+        int vx = (LCD_W - (int)strlen(buf) * 8) / 2;
+        draw_str(vx, 51, buf, C_WHITE, C_BLACK, 1);
+    }
+    if (info->build_date && info->build_time) {
+        snprintf(buf, sizeof(buf), "Built: %s %s", info->build_date, info->build_time);
+        int dx = (LCD_W - (int)strlen(buf) * 8) / 2;
+        draw_str(dx, 63, buf, C_GRAY, C_BLACK, 1);
     }
 
-    /* Version centered, scale 2 */
-    if (app_ver && *app_ver) {
-        char vbuf[40];
-        snprintf(vbuf, sizeof(vbuf), "v%s", app_ver);
-        int vx = (LCD_W - (int)strlen(vbuf) * 16) / 2;
-        draw_str(vx, 85, vbuf, C_WHITE, C_BLACK, 2);
-    }
+    /* ── WiFi block ── */
+    fill_rect(0, 76, LCD_W, 1, C_DKGRAY);
 
-    /* Build date/time, scale 1 */
-    if (build_date && build_time) {
-        char dbuf[40];
-        snprintf(dbuf, sizeof(dbuf), "Built: %s %s", build_date, build_time);
-        int dx = (LCD_W - (int)strlen(dbuf) * 8) / 2;
-        draw_str(dx, 125, dbuf, C_GRAY, C_BLACK, 1);
+#define LBL_X  4
+#define VAL_X  60
+#define ROW(y, lbl, val, col) \
+    draw_str(LBL_X, y, lbl, C_YELLOW, C_BLACK, 1); \
+    draw_str(VAL_X, y, val, col,      C_BLACK, 1)
+
+    snprintf(buf, sizeof(buf), "%s", (info->ssid && *info->ssid) ? info->ssid : "(AP mode)");
+    ROW(82, DT("WiFi:", "WiFi:"), buf, C_CYAN);
+
+    snprintf(buf, sizeof(buf), "%s", info->ip ? info->ip : "");
+    ROW(94, "IP:", buf, C_WHITE);
+
+    ROW(106, "MAC:", info->mac, C_WHITE);
+
+    ROW(118, DT("Host:", "Host:"), info->hostname, C_WHITE);
+
+    if (info->channel > 0) {
+        int quality = (int)(2 * ((int)info->rssi + 100));
+        if (quality < 0)   quality = 0;
+        if (quality > 100) quality = 100;
+        snprintf(buf, sizeof(buf), "%ddBm  Ch:%d  %d%%",
+                 (int)info->rssi, (int)info->channel, quality);
+    } else {
+        snprintf(buf, sizeof(buf), "N/A");
     }
+    ROW(130, "RSSI:", buf, C_WHITE);
+
+    /* ── System block ── */
+    fill_rect(0, 144, LCD_W, 1, C_DKGRAY);
+
+    snprintf(buf, sizeof(buf), "%luKB free", (unsigned long)(info->free_heap / 1024));
+    ROW(151, DT("Heap:", "Heap:"), buf, C_WHITE);
+
+    snprintf(buf, sizeof(buf), "%luMHz", (unsigned long)info->cpu_mhz);
+    ROW(163, "CPU:", buf, C_WHITE);
+
+    {
+        uint32_t u = info->uptime_sec;
+        uint32_t d = u / 86400; u %= 86400;
+        uint32_t h = u / 3600;  u %= 3600;
+        uint32_t m = u / 60;
+        snprintf(buf, sizeof(buf), "%lud %02lu:%02lu", (unsigned long)d,
+                 (unsigned long)h, (unsigned long)m);
+    }
+    ROW(175, DT("Up:", "Up:"), buf, C_WHITE);
+
+    if (info->last_fetch > 0) {
+        struct tm lt;
+        localtime_r(&info->last_fetch, &lt);
+        snprintf(buf, sizeof(buf), "%02d:%02d", lt.tm_hour, lt.tm_min);
+    } else {
+        snprintf(buf, sizeof(buf), "never");
+    }
+    ROW(187, DT("Fetch:", "Fetch:"), buf, C_WHITE);
+
+    ROW(199, DT("Relay:", "Relay:"), info->relay_reason, C_WHITE);
+
+#undef ROW
+#undef LBL_X
+#undef VAL_X
 
     /* Bottom row: [<] back only */
     draw_btn(0, CFG2_SAVE_Y, LCD_W, CFG_SAVE_H, "<", C_DKGRAY);
@@ -923,14 +982,14 @@ static void render_config_page3(const char *app_ver, const char *build_date,
 void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           bool aon_en, int aon_lim_mwh,
                           bool aoff_en, int aoff_lim_mwh, int page,
-                          const char *app_ver, const char *build_date, const char *build_time)
+                          const disp_sysinfo_t *info)
 {
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
         memset(s_fb, 0, LCD_W * rows * 2);
         if (page == 2)
-            render_config_page3(app_ver, build_date, build_time);
+            render_config_page3(info);
         else if (page == 1)
             render_config_page2(aon_en, aon_lim_mwh, aoff_en, aoff_lim_mwh);
         else

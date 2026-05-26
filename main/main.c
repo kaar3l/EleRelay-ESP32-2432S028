@@ -38,6 +38,7 @@
 #include "mqtt_client.h"
 #include "esp_ota_ops.h"
 #include "esp_app_format.h"
+#include "esp_timer.h"
 #include "display.h"
 
 static const char *TAG = "elerelay";
@@ -69,7 +70,6 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_CHEAP    "cheap_h_n"
 #define NVS_KEY_INV      "relay_inv"
 #define NVS_KEY_FETCHH   "fetch_hour"
-#define NVS_KEY_MAXDISP  "max_disp"
 #define NVS_KEY_NTP_SRV  "ntp_server"
 #define NVS_KEY_TZ       "tz_str"
 #define NVS_KEY_MQTT_EN  "mqtt_en"
@@ -97,7 +97,6 @@ static int  s_cheap_hours     = CONFIG_CHEAP_HOURS;     /* 1 .. window-1      */
 static int  s_lang            = LANG_EN;                /* LANG_EN / LANG_ET  */
 static bool s_relay_inv       = false;                  /* invert relay logic */
 static int  s_fetch_hour      = 23;                     /* 0-23               */
-static int  s_max_display     = 48;                     /* max rows in table  */
 static int  s_min_run_minutes = CONFIG_MIN_RUN_MINUTES; /* 0 = disabled       */
 static bool s_always_on_en    = false;                  /* force ON below limit */
 static int  s_always_on_limit = 0;                      /* EUR/MWh (0 = 0 c/kWh) */
@@ -134,6 +133,15 @@ static bool              s_relay_on      = false;
 static time_t            s_relay_on_since = 0;  /* when relay last turned ON, 0 if OFF */
 static time_t            s_last_fetch    = 0;
 static time_t            s_last_slot_ts  = 0;  /* end of last fetched slot (ts + 900) */
+
+typedef enum {
+    RELAY_RSN_NO_DATA = 0,
+    RELAY_RSN_SCHEDULE,
+    RELAY_RSN_ALWAYS_ON,
+    RELAY_RSN_MIN_RUN,
+    RELAY_RSN_ALWAYS_OFF,
+} relay_rsn_t;
+static relay_rsn_t s_relay_reason = RELAY_RSN_NO_DATA;
 static char              s_ip[20]     = "?.?.?.?";
 static bool              s_ap_mode    = false;
 static char              s_wifi_ssid[CRED_LEN] = {0};
@@ -193,7 +201,6 @@ static void nvs_load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_CHEAP,   &v) == ESP_OK) s_cheap_hours  = v;
     if (nvs_get_u8(h, NVS_KEY_INV,     &v) == ESP_OK) s_relay_inv    = (bool)v;
     if (nvs_get_u8(h, NVS_KEY_FETCHH,  &v) == ESP_OK) s_fetch_hour   = v;
-    if (nvs_get_u8(h, NVS_KEY_MAXDISP, &v) == ESP_OK) s_max_display  = v;
     if (nvs_get_u8(h, NVS_KEY_MQTT_EN, &v) == ESP_OK) s_mqtt_enabled = (bool)v;
     if (nvs_get_u8(h, NVS_KEY_LANG,    &v) == ESP_OK) s_lang         = v;
 
@@ -228,7 +235,6 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_CHEAP,     (uint8_t)s_cheap_hours);
     err |= nvs_set_u8(h,  NVS_KEY_INV,       (uint8_t)s_relay_inv);
     err |= nvs_set_u8(h,  NVS_KEY_FETCHH,    (uint8_t)s_fetch_hour);
-    err |= nvs_set_u8(h,  NVS_KEY_MAXDISP,   (uint8_t)s_max_display);
     err |= nvs_set_u8(h,  NVS_KEY_MQTT_EN,   (uint8_t)s_mqtt_enabled);
     err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
@@ -633,21 +639,34 @@ static void update_relay(void)
             break;
         }
     }
-    bool on = is_cheap ^ s_relay_inv;   /* invert flips cheap↔expensive */
+    bool on;
+    relay_rsn_t reason;
 
-    /* Always ON: force relay ON when price is at or below limit */
-    if (s_always_on_en && found_slot && raw_price_mwh <= (float)s_always_on_limit)
-        on = true;
-
-    /* Enforce minimum continuous run time: once ON, stay ON for s_min_run_minutes */
-    if (!on && s_min_run_minutes > 0 && s_relay_on && s_relay_on_since > 0) {
-        if (now - s_relay_on_since < (time_t)s_min_run_minutes * 60)
-            on = true;
-    }
-
-    /* Always OFF: force relay OFF when price is at or above limit (highest priority) */
-    if (s_always_off_en && found_slot && raw_price_mwh >= (float)s_always_off_limit)
+    if (!found_slot) {
         on = false;
+        reason = RELAY_RSN_NO_DATA;
+    } else {
+        on = is_cheap ^ s_relay_inv;
+        reason = RELAY_RSN_SCHEDULE;
+
+        if (s_always_on_en && raw_price_mwh <= (float)s_always_on_limit) {
+            on = true;
+            reason = RELAY_RSN_ALWAYS_ON;
+        }
+
+        if (!on && s_min_run_minutes > 0 && s_relay_on && s_relay_on_since > 0) {
+            if (now - s_relay_on_since < (time_t)s_min_run_minutes * 60) {
+                on = true;
+                reason = RELAY_RSN_MIN_RUN;
+            }
+        }
+
+        /* Always OFF is highest priority */
+        if (s_always_off_en && raw_price_mwh >= (float)s_always_off_limit) {
+            on = false;
+            reason = RELAY_RSN_ALWAYS_OFF;
+        }
+    }
 
     /* Track when relay transitions to ON */
     if (on && !s_relay_on)
@@ -655,7 +674,8 @@ static void update_relay(void)
     else if (!on)
         s_relay_on_since = 0;
 
-    s_relay_on = on;
+    s_relay_on     = on;
+    s_relay_reason = reason;
     xSemaphoreGive(s_mutex);
 
     gpio_set_level(RELAY_GPIO, on ? RELAY_ON_LEVEL : RELAY_OFF_LEVEL);
@@ -894,18 +914,6 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
           " Laadimine kell 23:00 tagab t&auml;ieliku hinnakomplekti."));
     httpd_resp_sendstr_chunk(req, chunk);
 
-    /* Max display rows */
-    {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-            "<label>%s"
-            "<input type='number' name='max_disp' min='1' max='%d' value='%d'>"
-            "</label>",
-            T("Max slots on price page (4 = 1 h)", "Maks perioode hinna lehel (4 = 1 h)"),
-            MAX_SLOTS, s_max_display);
-        httpd_resp_sendstr_chunk(req, buf);
-    }
-
     /* ── Time settings ── */
     snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Time", "Aeg"));
     httpd_resp_sendstr_chunk(req, chunk);
@@ -1058,9 +1066,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "fetch_h",  val, sizeof(val));
     int fetch_h = clamp(atoi(val), 0, 23);
 
-    form_field(body, "max_disp", val, sizeof(val));
-    int max_disp = clamp(atoi(val), 1, MAX_SLOTS);
-
     form_field(body, "min_run", val, sizeof(val));
     int min_run = clamp(atoi(val), 0, 480);
 
@@ -1112,7 +1117,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     s_cheap_hours  = cheap;
     s_relay_inv    = inv;
     s_fetch_hour   = fetch_h;
-    s_max_display     = max_disp;
     s_min_run_minutes  = min_run;
     s_always_on_en     = aon_en;
     s_always_on_limit  = aon_lim;
@@ -1140,9 +1144,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     mqtt_start();            /* restart MQTT client with new settings */
 
     ESP_LOGI(TAG, "Settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
-             "max_disp=%d min_run=%d aon=%d@%d aoff=%d@%d "
+             "min_run=%d aon=%d@%d aoff=%d@%d "
              "ntp=%s tz=%s mqtt=%d host=%s port=%d tp=%s tr=%s",
-             window, cheap, inv, fetch_h, max_disp, min_run,
+             window, cheap, inv, fetch_h, min_run,
              aon_en, aon_lim, aoff_en, aoff_lim,
              ntp_server, tz_str, mqtt_en, mqtt_host, mqtt_port,
              mqtt_topic_p, mqtt_topic_r);
@@ -1158,7 +1162,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         "<li>%s <b>%d min</b></li>"
         "<li>%s <b>%s</b></li>"
         "<li>%s <b>%02d:00</b></li>"
-        "<li>%s <b>%d</b></li>"
         "<li>NTP: <b>%s</b></li>"
         "<li>TZ: <b>%s</b></li>"
         "<li>MQTT: <b>%s</b>%s</li>"
@@ -1175,7 +1178,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         T("Min. continuous run:", "Min. j&auml;rjestikune k&auml;itus:"), min_run,
         T("Relay inverted:", "Relee p&ouml;&ouml;ratud:"), inv ? T("yes","jah") : T("no","ei"),
         T("Fetch at:", "Laadimine:"), fetch_h,
-        T("Max rows:", "Maks ridu:"), max_disp,
         ntp_server, tz_str,
         mqtt_en ? T("enabled","lubatud") : T("disabled","keelatud"),
         mqtt_en && mqtt_host[0] ? T(" \xe2\x80\x94 connecting...", " \xe2\x80\x94 \xc3\xbchendun...") : "",
@@ -1302,7 +1304,6 @@ static esp_err_t web_get_handler(httpd_req_t *req)
     int         count          = s_hour_count;
     time_t      last_fetch     = s_last_fetch;
     bool        inv            = s_relay_inv;
-    int         max_disp       = s_max_display;
     int         win_hours      = s_hours_window;
     int         min_run        = s_min_run_minutes;
     bool        aon_en         = s_always_on_en;
@@ -1381,12 +1382,12 @@ static esp_err_t web_get_handler(httpd_req_t *req)
         int start = 0;
         while (start < count && local[start].ts + 900 <= now) start++;
         int avail = count - start;
-        int show  = avail < max_disp ? avail : max_disp;
+        int show  = avail;
 
         snprintf(chunk, sizeof(chunk),
-            "<p class='meta'>%s %d / %d &times; 15min.</p>"
+            "<p class='meta'>%s %d &times; 15min.</p>"
             "<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>",
-            T("Showing", "N&auml;itan"), show, avail,
+            T("Showing", "N&auml;itan"), show,
             T("Time (local)", "Aeg (kohalik)"),
             T("Price (c/kWh)", "Hind (s/kWh)"),
             T("Relay", "Relee"));
@@ -1741,6 +1742,47 @@ static void update_display(void)
                    s_cheap_hours, s_hours_window, win_offset);
 }
 
+/* ── Sysinfo helper for config page 3 ────────────────────────────────────── */
+
+static void build_sysinfo(disp_sysinfo_t *out)
+{
+    const esp_app_desc_t *d = esp_app_get_description();
+    out->app_ver    = d->version;
+    out->build_date = d->date;
+    out->build_time = d->time;
+    out->ssid = s_ap_mode ? NULL : s_wifi_ssid;
+    out->ip   = s_ip;
+
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(out->mac, sizeof(out->mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(out->hostname, sizeof(out->hostname), "EleRelay-%02X%02X%02X",
+             mac[3], mac[4], mac[5]);
+
+    out->rssi    = 0;
+    out->channel = 0;
+    if (!s_ap_mode) {
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            out->rssi    = ap.rssi;
+            out->channel = ap.primary;
+        }
+    }
+    out->free_heap  = esp_get_free_heap_size();
+    out->cpu_mhz    = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    out->uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    out->last_fetch = s_last_fetch;
+
+    static const char *rsn_str[] = {
+        "No data", "Schedule", "Always ON", "Min-run", "Always OFF"
+    };
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    relay_rsn_t reason = s_relay_reason;
+    xSemaphoreGive(s_mutex);
+    strlcpy(out->relay_reason, rsn_str[reason], sizeof(out->relay_reason));
+}
+
 /* ── Touch task ──────────────────────────────────────────────────────────── */
 
 static void touch_task(void *arg)
@@ -1779,21 +1821,21 @@ static void touch_task(void *arg)
             s_screen = SCREEN_CONFIG;
             cfg_entered_at = xTaskGetTickCount();
             {
-                const esp_app_desc_t *d = esp_app_get_description();
+                disp_sysinfo_t _si;
+                build_sysinfo(&_si);
                 display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
                                     s_cfg_aon_en, s_cfg_aon_lim,
-                                    s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page,
-                                    d->version, d->date, d->time);
+                                    s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, &_si);
             }
         } else {
             cfg_entered_at = xTaskGetTickCount();  /* any touch resets the timer */
             int btn = display_config_hittest(tx, ty, s_cfg_page);
 #define REDRAW() do { \
-    const esp_app_desc_t *_d = esp_app_get_description(); \
+    disp_sysinfo_t _ri; \
+    build_sysinfo(&_ri); \
     display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run, \
                         s_cfg_aon_en, s_cfg_aon_lim, \
-                        s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, \
-                        _d->version, _d->date, _d->time); \
+                        s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, &_ri); \
 } while(0)
             switch (btn) {
             case DISP_CFG_CLOSE:
@@ -1941,9 +1983,9 @@ void app_main(void)
     /* Load runtime settings (before anything that uses them) */
     nvs_load_settings();
     display_set_lang(s_lang);
-    ESP_LOGI(TAG, "Settings: window=%d cheap=%d inv=%d fetch_h=%d max_disp=%d "
+    ESP_LOGI(TAG, "Settings: window=%d cheap=%d inv=%d fetch_h=%d "
              "ntp=%s tz=%s mqtt=%d host=%s port=%d",
-             s_hours_window, s_cheap_hours, s_relay_inv, s_fetch_hour, s_max_display,
+             s_hours_window, s_cheap_hours, s_relay_inv, s_fetch_hour,
              s_ntp_server, s_tz_str, s_mqtt_enabled, s_mqtt_host, s_mqtt_port);
 
     s_mutex = xSemaphoreCreateMutex();

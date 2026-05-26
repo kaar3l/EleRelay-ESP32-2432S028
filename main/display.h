@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 
 typedef struct {
@@ -38,10 +39,27 @@ bool display_touch_read(int *x, int *y);   /* screen coords; true = finger down 
 #define DISP_CFG_AOFF_DEC  14  /* always-off price limit − */
 #define DISP_CFG_AOFF_INC  15  /* always-off price limit + */
 
+typedef struct {
+    const char *app_ver;
+    const char *build_date;
+    const char *build_time;
+    const char *ssid;        /* NULL/empty in AP mode */
+    const char *ip;
+    char        mac[18];     /* "XX:XX:XX:XX:XX:XX" */
+    char        hostname[24];
+    int8_t      rssi;           /* dBm; 0 if not connected */
+    uint8_t     channel;        /* 0 if not connected */
+    uint32_t    free_heap;      /* bytes */
+    uint32_t    cpu_mhz;
+    uint32_t    uptime_sec;
+    time_t      last_fetch;     /* 0 = never */
+    char        relay_reason[16];
+} disp_sysinfo_t;
+
 void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           bool aon_en, int aon_lim_mwh,
                           bool aoff_en, int aoff_lim_mwh, int page,
-                          const char *app_ver, const char *build_date, const char *build_time);
+                          const disp_sysinfo_t *info);
 int  display_config_hittest(int tx, int ty, int page);
 
 /* Language */
