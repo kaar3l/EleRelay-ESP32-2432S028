@@ -719,16 +719,15 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 /* ── Config page ─────────────────────────────────────────────────────────── */
 
 /*
- * Layout arithmetic (screen 320×240, header+sep = 25px, available = 215px):
+ * Layout arithmetic (screen 320×240, header+sep = 25px, save = 32px, available = 182px):
  *
  * Page 1 — 4 items: 3×(lbl8+btn26)=102 + save32 = 134px
  *   5 gaps of 16px = 80px, +1px bottom → all gaps ~equal
  *   item_y = 25 + 16 + cumulative
  *
- * Page 2 — 5 items: (lbl8+tog22)+(lbl8+btn26)+(lbl8+tog22)+(lbl8+btn26)+save32
- *   = 30+34+30+34+32 = 160px
- *   6 gaps of 9px = 54px, +1px bottom → all gaps ~equal
- *   item_y = 25 + 9 + cumulative
+ * Page 2 — 2 sections × (lbl16+btn26+tog22) + 1px sep = 129px content
+ *   53px for 8 gaps: 8,6,6,7 | sep | 6,6,6,8 → all gaps ~equal
+ *   Order per section: label → price (-/+) → toggle
  */
 #define CFG_BTN_W      60
 #define CFG_BTN_H      26
@@ -750,13 +749,14 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 #define CFG_CHE_Y     111   /* label@95(scale2) btn@111 end@137 */
 #define CFG_MIN_Y     167   /* label@151(scale2) btn@167 end@193 */
 #define CFG1_SAVE_Y   208   /* pinned to LCD bottom: 240-32=208 */
-/* Page 2: label right above toggle/btn, gap=9px between rows */
-#define CFG2_AON_LBL_Y   28  /* scale2 label@28 end@44; gap=4 */
-#define CFG2_AON_TOG_Y   48  /* toggle@48 end@70 */
-#define CFG2_AON_PRC_Y   90  /* label@74 btn@90 end@116 */
-#define CFG2_AOFF_LBL_Y 120  /* scale2 label@120 end@136 */
-#define CFG2_AOFF_TOG_Y 140  /* toggle@140 end@162 */
-#define CFG2_AOFF_PRC_Y 182  /* label@166 btn@182 end@208=SAVE */
+/* Page 2: label→price→toggle order; gaps 8,6,6,7|sep|6,6,6,8 */
+#define CFG2_AON_LBL_Y   34  /* scale2 label@34  end@50  */
+#define CFG2_AON_PRC_Y   56  /* price btn@56     end@82  */
+#define CFG2_AON_TOG_Y   88  /* toggle@88        end@110 */
+#define CFG2_SEP_Y      117  /* 1px separator            */
+#define CFG2_AOFF_LBL_Y 124  /* scale2 label@124 end@140 */
+#define CFG2_AOFF_PRC_Y 146  /* price btn@146    end@172 */
+#define CFG2_AOFF_TOG_Y 178  /* toggle@178       end@200 */
 #define CFG2_SAVE_Y     208  /* pinned to LCD bottom: 240-32=208 */
 
 static void draw_btn(int x, int y, int w, int h, const char *text, uint16_t bg)
@@ -833,40 +833,47 @@ static void render_config_page2(bool aon_en, int aon_lim_mwh,
     draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
-    /* Always ON section */
+    /* Always ON section: label → price → toggle */
     draw_str(4, CFG2_AON_LBL_Y, DT("Always ON below:", "Alati sees alla:"), C_YELLOW, C_BLACK, 2);
-    {
-        uint16_t tcol = aon_en ? C_DKGREEN : C_DKGRAY;
-        draw_btn(CFG_TOG_X0, CFG2_AON_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
-                 aon_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
-    }
-    draw_str(4, CFG2_AON_PRC_Y - 16, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG2_AON_PRC_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG2_AON_PRC_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     {
         char pvbuf[10];
         snprintf(pvbuf, sizeof(pvbuf), "%.1f", aon_lim_mwh / 10.0f);
         int vw = (int)strlen(pvbuf) * 16;
-        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str(vx, CFG2_AON_PRC_Y + (CFG_BTN_H - 16) / 2, pvbuf, C_WHITE, C_BLACK, 2);
+        int cx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2;
+        int vx = cx - vw / 2;
+        int vy = CFG2_AON_PRC_Y + (CFG_BTN_H - 16) / 2;
+        draw_str(vx, vy, pvbuf, C_WHITE, C_BLACK, 2);
+        draw_str(cx + vw / 2 + 2, vy + 4, "s/kWh", C_GRAY, C_BLACK, 1);
+    }
+    {
+        uint16_t tcol = aon_en ? C_DKGREEN : C_DKGRAY;
+        draw_btn(CFG_TOG_X0, CFG2_AON_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
+                 aon_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
 
-    /* Always OFF section */
+    /* Section separator */
+    fill_rect(0, CFG2_SEP_Y, LCD_W, 1, C_DKGRAY);
+
+    /* Always OFF section: label → price → toggle */
     draw_str(4, CFG2_AOFF_LBL_Y, DT("Always OFF above:", "Alati valjas yle:"), C_YELLOW, C_BLACK, 2);
-    {
-        uint16_t tcol = aoff_en ? C_DKGREEN : C_DKGRAY;
-        draw_btn(CFG_TOG_X0, CFG2_AOFF_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
-                 aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
-    }
-    draw_str(4, CFG2_AOFF_PRC_Y - 16, DT("Price (c/kWh):", "Hind (s/kWh):"), C_YELLOW, C_BLACK, 2);
     draw_btn(CFG_DEC_X, CFG2_AOFF_PRC_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
     draw_btn(CFG_INC_X, CFG2_AOFF_PRC_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
     {
         char pvbuf[10];
         snprintf(pvbuf, sizeof(pvbuf), "%.1f", aoff_lim_mwh / 10.0f);
         int vw = (int)strlen(pvbuf) * 16;
-        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
-        draw_str(vx, CFG2_AOFF_PRC_Y + (CFG_BTN_H - 16) / 2, pvbuf, C_WHITE, C_BLACK, 2);
+        int cx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2;
+        int vx = cx - vw / 2;
+        int vy = CFG2_AOFF_PRC_Y + (CFG_BTN_H - 16) / 2;
+        draw_str(vx, vy, pvbuf, C_WHITE, C_BLACK, 2);
+        draw_str(cx + vw / 2 + 2, vy + 4, "s/kWh", C_GRAY, C_BLACK, 1);
+    }
+    {
+        uint16_t tcol = aoff_en ? C_DKGREEN : C_DKGRAY;
+        draw_btn(CFG_TOG_X0, CFG2_AOFF_TOG_Y, CFG_TOG_X1 - CFG_TOG_X0, CFG_TOG_H,
+                 aoff_en ? DT("ENABLED", "SEES") : DT("DISABLED", "VALJAS"), tcol);
     }
 
     /* Bottom row: [<] + [save] + [>] */
