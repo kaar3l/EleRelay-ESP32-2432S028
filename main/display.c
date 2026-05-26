@@ -3,7 +3,7 @@
  *
  * Landscape 320×240, RGB565.
  * Layout:
- *   y=  0..23  header: "EleRelay" + HH:MM + date
+ *   y=  0..23  header: date + HH:MM:SS (both scale×2)
  *   y= 24..25  separator
  *   y= 26..99  relay status (big) + current price
  *   y=100..101 separator
@@ -607,28 +607,30 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
 {
     /* ── Header bar (y 0..23, dark blue BG) ─────────────────────────── */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 8, "EleRelay", C_WHITE, C_NAVY, 1);
 
     if (now > 0) {
         struct tm lt;
         localtime_r(&now, &lt);
         char tbuf[9];
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
-        draw_str(LCD_W - 8 * 8 - 4, 8, tbuf, C_WHITE, C_NAVY, 1);
+        draw_str(LCD_W - 8 * 16 - 4, 4, tbuf, C_WHITE, C_NAVY, 2);
 
-        static const char *days_en[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-        static const char *days_et[] = {"Puh","Esm","Tei","Kol","Nel","Ree","Lau"};
-        static const char *mon_en[]  = {"Jan","Feb","Mar","Apr","May","Jun",
-                                        "Jul","Aug","Sep","Oct","Nov","Dec"};
-        static const char *mon_et[]  = {"Jan","Veb","Mar","Apr","Mai","Jun",
-                                        "Jul","Aug","Sep","Okt","Nov","Det"};
-        const char **days   = s_disp_lang == LANG_ET ? days_et : days_en;
-        const char **months = s_disp_lang == LANG_ET ? mon_et  : mon_en;
-        char dbuf[16];
-        snprintf(dbuf, sizeof(dbuf), "%s %d %s",
-                 days[lt.tm_wday], lt.tm_mday, months[lt.tm_mon]);
-        int dw = (int)strlen(dbuf) * 8;
-        draw_str(LCD_W / 2 - dw / 2, 8, dbuf, C_WHITE, C_NAVY, 1);
+        char dbuf[11]; /* "DD.MM.YYYY\0" */
+        int day  = lt.tm_mday;
+        int mon  = lt.tm_mon + 1;
+        int year = (lt.tm_year + 1900) % 10000;
+        dbuf[0] = '0' + (day  / 10) % 10;
+        dbuf[1] = '0' +  day        % 10;
+        dbuf[2] = '.';
+        dbuf[3] = '0' + (mon  / 10) % 10;
+        dbuf[4] = '0' +  mon        % 10;
+        dbuf[5] = '.';
+        dbuf[6] = '0' + (year / 1000) % 10;
+        dbuf[7] = '0' + (year /  100) % 10;
+        dbuf[8] = '0' + (year /   10) % 10;
+        dbuf[9] = '0' +  year         % 10;
+        dbuf[10] = '\0';
+        draw_str(4, 4, dbuf, C_WHITE, C_NAVY, 2);
     }
 
     /* ── Separator ───────────────────────────────────────────────────── */
