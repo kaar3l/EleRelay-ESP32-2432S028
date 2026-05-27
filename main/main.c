@@ -83,6 +83,7 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_AON_LIM   "aon_lim"
 #define NVS_KEY_AOFF_EN   "aoff_en"
 #define NVS_KEY_AOFF_LIM  "aoff_lim"
+#define NVS_KEY_BL        "bl_pct"
 
 /* Picks between English and Estonian at runtime */
 #define T(en, et) (s_lang == LANG_ET ? (et) : (en))
@@ -102,6 +103,7 @@ static bool s_always_on_en    = false;                  /* force ON below limit 
 static int  s_always_on_limit = 0;                      /* EUR/MWh (0 = 0 c/kWh) */
 static bool s_always_off_en   = false;                  /* force OFF above limit */
 static int  s_always_off_limit = 200;                   /* EUR/MWh (200 = 20 c/kWh) */
+static int  s_backlight_pct   = 100;                    /* 0-100 % */
 
 static char s_ntp_server[STR_LEN]       = "pool.ntp.org";
 static char s_tz_str[STR_LEN]           = "EET-2EEST,M3.5.0/3,M10.5.0/4";
@@ -161,6 +163,7 @@ static bool              s_cfg_aon_en   = false;
 static bool              s_cfg_aoff_en  = false;
 static int               s_cfg_aon_lim  = 0;
 static int               s_cfg_aoff_lim = 200;
+static int               s_cfg_bl_pct   = 100;
 static int               s_cfg_page     = 0;
 
 /* ── NVS: WiFi credentials ───────────────────────────────────────────────── */
@@ -203,6 +206,7 @@ static void nvs_load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_FETCHH,  &v) == ESP_OK) s_fetch_hour   = v;
     if (nvs_get_u8(h, NVS_KEY_MQTT_EN, &v) == ESP_OK) s_mqtt_enabled = (bool)v;
     if (nvs_get_u8(h, NVS_KEY_LANG,    &v) == ESP_OK) s_lang         = v;
+    if (nvs_get_u8(h, NVS_KEY_BL,      &v) == ESP_OK) s_backlight_pct = v;
 
     uint16_t port;
     if (nvs_get_u16(h, NVS_KEY_MQTT_PORT, &port) == ESP_OK) s_mqtt_port = port;
@@ -237,6 +241,7 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_FETCHH,    (uint8_t)s_fetch_hour);
     err |= nvs_set_u8(h,  NVS_KEY_MQTT_EN,   (uint8_t)s_mqtt_enabled);
     err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
+    err |= nvs_set_u8(h,  NVS_KEY_BL,        (uint8_t)s_backlight_pct);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
     err |= nvs_set_u16(h, NVS_KEY_MIN_RUN,   (uint16_t)s_min_run_minutes);
     err |= nvs_set_u8(h,  NVS_KEY_AON_EN,    (uint8_t)s_always_on_en);
@@ -1816,6 +1821,7 @@ static void touch_task(void *arg)
             s_cfg_aoff_en  = s_always_off_en;
             s_cfg_aon_lim  = s_always_on_limit;
             s_cfg_aoff_lim = s_always_off_limit;
+            s_cfg_bl_pct   = s_backlight_pct;
             xSemaphoreGive(s_mutex);
             s_cfg_page = 0;
             s_screen = SCREEN_CONFIG;
@@ -1825,7 +1831,8 @@ static void touch_task(void *arg)
                 build_sysinfo(&_si);
                 display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
                                     s_cfg_aon_en, s_cfg_aon_lim,
-                                    s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, &_si);
+                                    s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page,
+                                    s_cfg_bl_pct, &_si);
             }
         } else {
             cfg_entered_at = xTaskGetTickCount();  /* any touch resets the timer */
@@ -1835,7 +1842,8 @@ static void touch_task(void *arg)
     build_sysinfo(&_ri); \
     display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run, \
                         s_cfg_aon_en, s_cfg_aon_lim, \
-                        s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, &_ri); \
+                        s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, \
+                        s_cfg_bl_pct, &_ri); \
 } while(0)
             switch (btn) {
             case DISP_CFG_CLOSE:
@@ -1843,7 +1851,7 @@ static void touch_task(void *arg)
                 update_display();
                 break;
             case DISP_CFG_NEXT_PAGE:
-                if (s_cfg_page < 2) s_cfg_page++;
+                if (s_cfg_page < 3) s_cfg_page++;
                 REDRAW();
                 break;
             case DISP_CFG_PREV_PAGE:
@@ -1899,6 +1907,18 @@ static void touch_task(void *arg)
                 if (s_cfg_aoff_lim <= 1990) s_cfg_aoff_lim += 10;
                 REDRAW();
                 break;
+            case DISP_CFG_BL_DEC:
+                if (s_cfg_bl_pct >= 5) s_cfg_bl_pct -= 5;
+                else s_cfg_bl_pct = 0;
+                display_set_backlight(s_cfg_bl_pct);
+                REDRAW();
+                break;
+            case DISP_CFG_BL_INC:
+                if (s_cfg_bl_pct <= 95) s_cfg_bl_pct += 5;
+                else s_cfg_bl_pct = 100;
+                display_set_backlight(s_cfg_bl_pct);
+                REDRAW();
+                break;
             case DISP_CFG_SAVE:
                 xSemaphoreTake(s_mutex, portMAX_DELAY);
                 s_hours_window    = s_cfg_window;
@@ -1908,8 +1928,10 @@ static void touch_task(void *arg)
                 s_always_off_en   = s_cfg_aoff_en;
                 s_always_on_limit  = s_cfg_aon_lim;
                 s_always_off_limit = s_cfg_aoff_lim;
+                s_backlight_pct   = s_cfg_bl_pct;
                 mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);
                 xSemaphoreGive(s_mutex);
+                display_set_backlight(s_backlight_pct);
                 nvs_save_settings();
                 update_relay();
                 s_screen = SCREEN_MAIN;
@@ -1983,6 +2005,7 @@ void app_main(void)
     /* Load runtime settings (before anything that uses them) */
     nvs_load_settings();
     display_set_lang(s_lang);
+    display_set_backlight(s_backlight_pct);
     ESP_LOGI(TAG, "Settings: window=%d cheap=%d inv=%d fetch_h=%d "
              "ntp=%s tz=%s mqtt=%d host=%s port=%d",
              s_hours_window, s_cheap_hours, s_relay_inv, s_fetch_hour,

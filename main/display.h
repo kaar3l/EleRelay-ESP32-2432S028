@@ -38,6 +38,8 @@ bool display_touch_read(int *x, int *y);   /* screen coords; true = finger down 
 #define DISP_CFG_AON_INC   13  /* always-on price limit + */
 #define DISP_CFG_AOFF_DEC  14  /* always-off price limit − */
 #define DISP_CFG_AOFF_INC  15  /* always-off price limit + */
+#define DISP_CFG_BL_DEC    16  /* backlight brightness − */
+#define DISP_CFG_BL_INC    17  /* backlight brightness + */
 
 typedef struct {
     const char *app_ver;
@@ -59,8 +61,10 @@ typedef struct {
 void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           bool aon_en, int aon_lim_mwh,
                           bool aoff_en, int aoff_lim_mwh, int page,
+                          int backlight_pct,
                           const disp_sysinfo_t *info);
 int  display_config_hittest(int tx, int ty, int page);
+void display_set_backlight(int pct);
 
 /* Language */
 #define LANG_EN 0

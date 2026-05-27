@@ -15,6 +15,7 @@
 #include "display.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -31,6 +32,12 @@ static const char *TAG = "touch";
 #define LCD_DC      2
 #define LCD_RST    -1   /* Not connected; rely on software reset */
 #define LCD_BL     21
+
+#define LEDC_BASE_FREQ      5000
+#define LCD_BACK_LIGHT_PIN  21
+#define LEDC_BL_CHANNEL     LEDC_CHANNEL_0
+#define LEDC_BL_TIMER       LEDC_TIMER_0
+#define LEDC_BL_RESOLUTION  LEDC_TIMER_8_BIT
 
 #define LCD_W     320
 #define LCD_H     240
@@ -515,11 +522,35 @@ static void st7789_init(void)
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
+void display_set_backlight(int pct)
+{
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    uint32_t duty = (uint32_t)(pct * 255) / 100;
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_BL_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_BL_CHANNEL);
+}
+
 void display_init(void)
 {
-    /* Backlight OFF during init */
-    gpio_set_direction(LCD_BL, GPIO_MODE_OUTPUT);
-    gpio_set_level(LCD_BL, 0);
+    /* Backlight via LEDC PWM — OFF during init */
+    ledc_timer_config_t bl_timer = {
+        .speed_mode      = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_BL_RESOLUTION,
+        .timer_num       = LEDC_BL_TIMER,
+        .freq_hz         = LEDC_BASE_FREQ,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&bl_timer);
+    ledc_channel_config_t bl_ch = {
+        .gpio_num   = LCD_BACK_LIGHT_PIN,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel    = LEDC_BL_CHANNEL,
+        .timer_sel  = LEDC_BL_TIMER,
+        .duty       = 0,
+        .hpoint     = 0,
+    };
+    ledc_channel_config(&bl_ch);
 
     /* SPI bus */
     spi_bus_config_t buscfg = {
@@ -561,8 +592,8 @@ void display_init(void)
     }
     s_sy0 = 0;
 
-    /* Backlight ON */
-    gpio_set_level(LCD_BL, 1);
+    /* Backlight ON at 100% */
+    display_set_backlight(100);
 }
 
 /* ── Simple status screen shown during boot / WiFi connect ──────────────── */
@@ -774,7 +805,7 @@ static void render_config_page1(int cheap_hours, int hours_window, int min_run_m
 {
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 8, DT("Config 1/3", "Seaded 1/3"), C_WHITE, C_NAVY, 1);
+    draw_str(4, 8, DT("Config 1/4", "Seaded 1/4"), C_WHITE, C_NAVY, 1);
     fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
     draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
@@ -828,7 +859,7 @@ static void render_config_page2(bool aon_en, int aon_lim_mwh,
 {
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 8, DT("Config 2/3", "Seaded 2/3"), C_WHITE, C_NAVY, 1);
+    draw_str(4, 8, DT("Config 2/4", "Seaded 2/4"), C_WHITE, C_NAVY, 1);
     fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
     draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
@@ -883,13 +914,45 @@ static void render_config_page2(bool aon_en, int aon_lim_mwh,
     draw_btn(CFG_NEXT_BTN_X, CFG2_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, ">", C_DKGRAY);
 }
 
-static void render_config_page3(const disp_sysinfo_t *info)
+/* Page 3 — backlight brightness */
+#define CFG3_BL_Y   110   /* [-] value [+] row Y */
+
+static void render_config_page3(int backlight_pct)
+{
+    /* Header */
+    fill_rect(0, 0, LCD_W, 24, C_NAVY);
+    draw_str(4, 8, DT("Config 3/4", "Seaded 3/4"), C_WHITE, C_NAVY, 1);
+    fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
+    draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
+    fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
+
+    /* Backlight row */
+    draw_str(4, CFG3_BL_Y - 16, DT("Backlight:", "Taustvalgus:"), C_YELLOW, C_BLACK, 2);
+    draw_btn(CFG_DEC_X, CFG3_BL_Y, CFG_BTN_W, CFG_BTN_H, "-", C_DKGRAY);
+    draw_btn(CFG_INC_X, CFG3_BL_Y, CFG_BTN_W, CFG_BTN_H, "+", C_DKGRAY);
+    char vbuf[8];
+    snprintf(vbuf, sizeof(vbuf), "%d%%", backlight_pct);
+    {
+        int vw = (int)strlen(vbuf) * 16;
+        int vx = (CFG_DEC_X + CFG_BTN_W + CFG_INC_X) / 2 - vw / 2;
+        draw_str(vx, CFG3_BL_Y + (CFG_BTN_H - 16) / 2, vbuf, C_WHITE, C_BLACK, 2);
+    }
+
+    /* Bottom row: [<] + [save] + [>] */
+    draw_btn(CFG_PREV_BTN_X, CFG1_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, "<", C_DKGRAY);
+    draw_btn(CFG_SAVE_X1, CFG1_SAVE_Y, CFG_SAVE_X2 - CFG_SAVE_X1, CFG_SAVE_H,
+             DT("SAVE", "SALVESTA"), C_DKGREEN);
+    draw_btn(CFG_NEXT_BTN_X, CFG1_SAVE_Y, CFG_NAV_BTN_W, CFG_SAVE_H, ">", C_DKGRAY);
+}
+
+/* Page 4 — system info */
+static void render_config_page4(const disp_sysinfo_t *info)
 {
     char buf[48];
 
     /* Header */
     fill_rect(0, 0, LCD_W, 24, C_NAVY);
-    draw_str(4, 8, DT("Config 3/3", "Seaded 3/3"), C_WHITE, C_NAVY, 1);
+    draw_str(4, 8, DT("Config 4/4", "Seaded 4/4"), C_WHITE, C_NAVY, 1);
     fill_rect(CFG_CLOSE_X1, 0, LCD_W - CFG_CLOSE_X1, 24, C_DKRED);
     draw_str(CFG_CLOSE_X1 + (LCD_W - CFG_CLOSE_X1 - 8) / 2, 8, "X", C_WHITE, C_DKRED, 1);
     fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
@@ -982,14 +1045,17 @@ static void render_config_page3(const disp_sysinfo_t *info)
 void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           bool aon_en, int aon_lim_mwh,
                           bool aoff_en, int aoff_lim_mwh, int page,
+                          int backlight_pct,
                           const disp_sysinfo_t *info)
 {
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
         memset(s_fb, 0, LCD_W * rows * 2);
-        if (page == 2)
-            render_config_page3(info);
+        if (page == 3)
+            render_config_page4(info);
+        else if (page == 2)
+            render_config_page3(backlight_pct);
         else if (page == 1)
             render_config_page2(aon_en, aon_lim_mwh, aoff_en, aoff_lim_mwh);
         else
@@ -1040,7 +1106,24 @@ int display_config_hittest(int tx, int ty, int page)
         }
         if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
             ty >= CFG2_SAVE_Y && ty < CFG2_SAVE_Y + CFG_SAVE_H) return DISP_CFG_SAVE;
-    } else { /* page 2: info only */
+    } else if (page == 2) {
+        /* Backlight page */
+        if (tx >= CFG_PREV_BTN_X && tx < CFG_PREV_BTN_X + CFG_NAV_BTN_W &&
+            ty >= CFG1_SAVE_Y && ty < CFG1_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_PREV_PAGE;
+        if (tx >= CFG_NEXT_BTN_X && tx < CFG_NEXT_BTN_X + CFG_NAV_BTN_W &&
+            ty >= CFG1_SAVE_Y && ty < CFG1_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_NEXT_PAGE;
+        if (tx >= CFG_DEC_X && tx < CFG_DEC_X + CFG_BTN_W &&
+            ty >= CFG3_BL_Y && ty < CFG3_BL_Y + CFG_BTN_H)
+            return DISP_CFG_BL_DEC;
+        if (tx >= CFG_INC_X && tx < CFG_INC_X + CFG_BTN_W &&
+            ty >= CFG3_BL_Y && ty < CFG3_BL_Y + CFG_BTN_H)
+            return DISP_CFG_BL_INC;
+        if (tx >= CFG_SAVE_X1 && tx <= CFG_SAVE_X2 &&
+            ty >= CFG1_SAVE_Y && ty < CFG1_SAVE_Y + CFG_SAVE_H)
+            return DISP_CFG_SAVE;
+    } else { /* page 3: info only */
         if (ty >= CFG2_SAVE_Y && ty < CFG2_SAVE_Y + CFG_SAVE_H)
             return DISP_CFG_PREV_PAGE;
     }
