@@ -9,7 +9,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 - **Always-ON price limit** — force relay ON whenever the spot price is at or below a set threshold (overrides normal schedule)
 - **Always-OFF price limit** — force relay OFF whenever the spot price is at or above a set threshold (highest priority; overrides always-ON and min-run)
 - ILI9341 320×240 colour display showing relay state, current price, and a price bar chart
-- **Touchscreen support** — tap the display to open a 3-page settings screen; adjust window size, cheap hours, minimum run time, always-ON/OFF thresholds, and enable/disable price limits directly on the device; auto-closes after 60 s of inactivity
+- **Touchscreen support** — tap the display to open a 4-page settings screen; adjust window size, cheap hours, minimum run time, always-ON/OFF thresholds, enable/disable price limits, and set backlight brightness directly on the device; auto-closes after 60 s of inactivity
 - **English / Estonian UI** — language selector on the `/settings` page; applies to both the web interface and the LCD
 - Captive-portal style web UI (no app needed) for all settings
 - All settings stored in NVS — survive reboots
@@ -127,7 +127,6 @@ All settings are changed on the **`/settings`** page and take effect immediately
 | Min. consecutive run | 0 (off) | Once ON, keep relay ON for at least this many minutes — useful for appliances that need a full run cycle (e.g. washing machine). 0 = disabled. |
 | Inverted | off | When on, relay is ON during *expensive* hours instead |
 | Fetch prices at | 23:00 | Hour of day for the daily price refresh (Elering publishes next-day prices ~14:00 EET) |
-| Max slots on page | 48 | Maximum rows shown in the price table |
 
 ### Price Limits
 
@@ -139,6 +138,12 @@ All settings are changed on the **`/settings`** page and take effect immediately
 | Always OFF — limit (c/kWh) | 20.0 | Force relay OFF when spot price ≥ this value — takes priority over always-ON and min. run |
 
 Price limits accept decimal values (e.g. `0.5`, `15.3`). Both limits can be toggled on the `/settings` page and on the LCD touch config screen.
+
+### Backlight
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Backlight brightness | 100 % | LCD backlight level; adjustable in 5 % steps on the touch config screen |
 
 ### Language
 
@@ -199,9 +204,9 @@ White vertical lines in the bar chart mark the boundaries of each look-ahead win
 
 ### LCD touch configuration
 
-Tap anywhere on the display to open the on-screen settings (3 pages). Navigate with **[<]** / **[>]** buttons; tap **X** in the top-right corner to close without saving. The screen closes automatically after **60 seconds of inactivity**.
+Tap anywhere on the display to open the on-screen settings (4 pages). Navigate with **[<]** / **[>]** buttons; tap **X** in the top-right corner to close without saving. The screen closes automatically after **60 seconds of inactivity**.
 
-**Page 1/3 — Relay schedule**
+**Page 1/4 — Relay schedule**
 
 | Row | Control | Notes |
 |-----|---------|-------|
@@ -209,7 +214,7 @@ Tap anywhere on the display to open the on-screen settings (3 pages). Navigate w
 | Cheap hours | − / + buttons, 1 h step | Range 1 h … window−1 |
 | Min. run time | − / + buttons, 15 min step | 0 (OFF) – 480 min |
 
-**Page 2/3 — Price limits**
+**Page 2/4 — Price limits**
 
 | Row | Control | Notes |
 |-----|---------|-------|
@@ -218,11 +223,17 @@ Tap anywhere on the display to open the on-screen settings (3 pages). Navigate w
 | Always OFF above | toggle button | Red = enabled |
 | Always OFF — price | − / + buttons, 0.1 c/kWh step | Force relay OFF when price ≥ this value (highest priority) |
 
-**Page 3/3 — Info**
+**Page 3/4 — Backlight**
 
-Read-only page showing app name, version, and build timestamp.
+| Row | Control | Notes |
+|-----|---------|-------|
+| Brightness | − / + buttons, 5 % step | 0–100 %; takes effect immediately |
 
-Tap **SAVE** on page 1 or 2 to persist all values to NVS.
+**Page 4/4 — Info**
+
+Read-only page showing app name, version, build timestamp, WiFi SSID, IP address, and MAC address.
+
+Tap **SAVE** on pages 1–3 to persist all values to NVS.
 
 ## Compile-time defaults (menuconfig)
 

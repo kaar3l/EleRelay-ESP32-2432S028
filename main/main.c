@@ -710,6 +710,17 @@ static void restart_task(void *arg)
     esp_restart();
 }
 
+/* Retry STA connection every 5 minutes when stuck in AP mode.
+ * Only started when NVS credentials exist, so first-boot setup is unaffected. */
+static void ap_reconnect_task(void *arg)
+{
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
+        ESP_LOGI(TAG, "AP mode: retrying STA connection");
+        esp_restart();
+    }
+}
+
 /* ── Common CSS ──────────────────────────────────────────────────────────── */
 
 static const char *PAGE_CSS =
@@ -2043,7 +2054,8 @@ void app_main(void)
 
     /* WiFi credentials: NVS → Kconfig fallback */
     char ssid[CRED_LEN] = {0}, pass[CRED_LEN] = {0};
-    if (nvs_load_creds(ssid, pass) != ESP_OK) {
+    bool had_nvs_creds = (nvs_load_creds(ssid, pass) == ESP_OK);
+    if (!had_nvs_creds) {
         strlcpy(ssid, CONFIG_WIFI_SSID,     sizeof(ssid));
         strlcpy(pass, CONFIG_WIFI_PASSWORD, sizeof(pass));
         ESP_LOGI(TAG, "No NVS creds, using Kconfig defaults (SSID: %s)", ssid);
@@ -2071,5 +2083,7 @@ void app_main(void)
         start_webserver();
         update_display();   /* show AP mode on screen */
         xTaskCreate(touch_task, "touch", 8192, NULL, 4, NULL);
+        if (had_nvs_creds)
+            xTaskCreate(ap_reconnect_task, "ap_reconn", 2048, NULL, 3, NULL);
     }
 }
