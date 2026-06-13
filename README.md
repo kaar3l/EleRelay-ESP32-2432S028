@@ -100,7 +100,7 @@ After the first flash, use the `/ota` web page for all future updates.
 
 1. Power on the board — it starts as a WiFi access point **EleRelay-Setup** (open, no password).
 2. Connect to that network and open `http://192.168.4.1/wifi`.
-3. Enter your WiFi SSID and password and click **Save & Restart**.
+3. Enter your WiFi SSID and password and click **Save & Restart**. By default the board uses DHCP; select **Static IP** to set a fixed address, subnet mask, gateway, and DNS.
 4. The board connects to your network, syncs time via NTP, fetches prices, and starts the relay logic.
 
 The IP address is shown on the display. Open `http://<ip>/` in a browser to see the price table.
@@ -111,7 +111,7 @@ The IP address is shown on the display. Open `http://<ip>/` in a browser to see 
 |-----|-------------|
 | `/` | Live price table with relay state |
 | `/settings` | All runtime settings (including language) |
-| `/wifi` | Change WiFi credentials |
+| `/wifi` | Network settings: WiFi credentials, DHCP or static IP (address, mask, gateway, DNS) |
 | `/ota` | OTA firmware update (upload `.bin` from browser) |
 
 ## Settings
