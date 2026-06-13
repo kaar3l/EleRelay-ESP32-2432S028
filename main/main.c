@@ -29,6 +29,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_netif.h"
+#include "lwip/inet.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_sntp.h"
@@ -65,6 +66,11 @@ static const char *TAG = "elerelay";
 /* WiFi credential keys */
 #define NVS_KEY_SSID     "wifi_ssid"
 #define NVS_KEY_PASS     "wifi_pass"
+#define NVS_KEY_IP_MODE  "ip_mode"
+#define NVS_KEY_IP_ADDR  "ip_addr"
+#define NVS_KEY_IP_MASK  "ip_mask"
+#define NVS_KEY_IP_GW    "ip_gw"
+#define NVS_KEY_IP_DNS   "ip_dns"
 /* Settings keys */
 #define NVS_KEY_WINDOW   "h_window"
 #define NVS_KEY_CHEAP    "cheap_h_n"
@@ -90,6 +96,7 @@ static const char *TAG = "elerelay";
 
 #define CRED_LEN         64
 #define STR_LEN          64
+#define IP_STR_LEN       16
 
 /* ── Runtime settings (loaded from NVS, defaults from Kconfig) ───────────── */
 
@@ -147,6 +154,12 @@ static relay_rsn_t s_relay_reason = RELAY_RSN_NO_DATA;
 static char              s_ip[20]     = "?.?.?.?";
 static bool              s_ap_mode    = false;
 static char              s_wifi_ssid[CRED_LEN] = {0};
+
+static int  s_ip_mode    = 0;                  /* 0 = DHCP, 1 = static */
+static char s_static_ip[IP_STR_LEN]   = "";
+static char s_static_mask[IP_STR_LEN] = "255.255.255.0";
+static char s_static_gw[IP_STR_LEN]   = "";
+static char s_static_dns[IP_STR_LEN]  = "";
 
 static char *s_http_buf = NULL;
 static int   s_http_len = 0;
@@ -207,6 +220,7 @@ static void nvs_load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_MQTT_EN, &v) == ESP_OK) s_mqtt_enabled = (bool)v;
     if (nvs_get_u8(h, NVS_KEY_LANG,    &v) == ESP_OK) s_lang         = v;
     if (nvs_get_u8(h, NVS_KEY_BL,      &v) == ESP_OK) s_backlight_pct = v;
+    if (nvs_get_u8(h, NVS_KEY_IP_MODE, &v) == ESP_OK) s_ip_mode      = v;
 
     uint16_t port;
     if (nvs_get_u16(h, NVS_KEY_MQTT_PORT, &port) == ESP_OK) s_mqtt_port = port;
@@ -227,6 +241,11 @@ static void nvs_load_settings(void)
     len = STR_LEN; nvs_get_str(h, NVS_KEY_MQTT_TPRC, s_mqtt_topic_price, &len);
     len = STR_LEN; nvs_get_str(h, NVS_KEY_MQTT_TRLY, s_mqtt_topic_relay, &len);
 
+    len = IP_STR_LEN; nvs_get_str(h, NVS_KEY_IP_ADDR, s_static_ip,   &len);
+    len = IP_STR_LEN; nvs_get_str(h, NVS_KEY_IP_MASK, s_static_mask, &len);
+    len = IP_STR_LEN; nvs_get_str(h, NVS_KEY_IP_GW,   s_static_gw,   &len);
+    len = IP_STR_LEN; nvs_get_str(h, NVS_KEY_IP_DNS,  s_static_dns,  &len);
+
     nvs_close(h);
 }
 
@@ -242,6 +261,7 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_MQTT_EN,   (uint8_t)s_mqtt_enabled);
     err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
     err |= nvs_set_u8(h,  NVS_KEY_BL,        (uint8_t)s_backlight_pct);
+    err |= nvs_set_u8(h,  NVS_KEY_IP_MODE,   (uint8_t)s_ip_mode);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
     err |= nvs_set_u16(h, NVS_KEY_MIN_RUN,   (uint16_t)s_min_run_minutes);
     err |= nvs_set_u8(h,  NVS_KEY_AON_EN,    (uint8_t)s_always_on_en);
@@ -253,6 +273,10 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_str(h, NVS_KEY_MQTT_HOST, s_mqtt_host);
     err |= nvs_set_str(h, NVS_KEY_MQTT_TPRC, s_mqtt_topic_price);
     err |= nvs_set_str(h, NVS_KEY_MQTT_TRLY, s_mqtt_topic_relay);
+    err |= nvs_set_str(h, NVS_KEY_IP_ADDR,   s_static_ip);
+    err |= nvs_set_str(h, NVS_KEY_IP_MASK,   s_static_mask);
+    err |= nvs_set_str(h, NVS_KEY_IP_GW,     s_static_gw);
+    err |= nvs_set_str(h, NVS_KEY_IP_DNS,    s_static_dns);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -349,6 +373,24 @@ static bool wifi_start_sta(const char *ssid, const char *pass)
              mac[3], mac[4], mac[5]);
     esp_netif_set_hostname(sta, hostname);
     ESP_LOGI(TAG, "Hostname: %s", hostname);
+
+    if (s_ip_mode == 1 && s_static_ip[0]) {
+        esp_netif_dhcpc_stop(sta);
+        esp_netif_ip_info_t ip_info = {0};
+        ip4_addr_t addr;
+        if (ip4addr_aton(s_static_ip, &addr))   ip_info.ip.addr      = addr.addr;
+        if (ip4addr_aton(s_static_mask, &addr)) ip_info.netmask.addr = addr.addr;
+        if (ip4addr_aton(s_static_gw, &addr))   ip_info.gw.addr      = addr.addr;
+        esp_netif_set_ip_info(sta, &ip_info);
+        if (s_static_dns[0] && ip4addr_aton(s_static_dns, &addr)) {
+            esp_netif_dns_info_t dns_info = {0};
+            dns_info.ip.type     = ESP_IPADDR_TYPE_V4;
+            dns_info.ip.u_addr.ip4.addr = addr.addr;
+            esp_netif_set_dns_info(sta, ESP_NETIF_DNS_MAIN, &dns_info);
+        }
+        ESP_LOGI(TAG, "Static IP: %s / %s gw %s dns %s",
+                 s_static_ip, s_static_mask, s_static_gw, s_static_dns);
+    }
 
     wifi_config_t wcfg = {0};
     strlcpy((char *)wcfg.sta.ssid,     ssid, sizeof(wcfg.sta.ssid));
@@ -788,11 +830,12 @@ static void send_page_head(httpd_req_t *req, const char *title)
         "</head><body><nav>"
         "<a href='/'>&#x26A1; %s</a>"
         "<a href='/settings'>&#x2699;&#xFE0F; %s</a>"
-        "<a href='/wifi'>&#x1F4F6; WiFi</a>"
+        "<a href='/wifi'>&#x1F4F6; %s</a>"
         "<a href='/ota'>&#x1F4E6; OTA</a>"
         "</nav>",
         T("Prices", "Hinnad"),
-        T("Settings", "Seaded"));
+        T("Settings", "Seaded"),
+        T("Network", "V&otilde;rk"));
     httpd_resp_sendstr_chunk(req, buf);
 }
 
@@ -1212,25 +1255,57 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
 static void send_wifi_form(httpd_req_t *req, bool is_ap)
 {
-    send_page_head(req, T("EleRelay \xe2\x80\x94 WiFi", "EleRelay \xe2\x80\x94 WiFi"));
-    char buf[768];
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Network", "EleRelay \xe2\x80\x94 V&otilde;rk"));
+    char buf[1024];
     snprintf(buf, sizeof(buf),
         "<h1>&#x1F4F6; %s</h1>%s"
         "<form method='POST' action='/wifi'>"
         "<label>%s<input type='text' name='ssid' required maxlength='32'"
-        " placeholder='%s'></label>"
+        " value='%s' placeholder='%s'></label>"
         "<label>%s<input type='password' name='pass' maxlength='63'"
         " placeholder='%s'></label>"
-        "<button type='submit'>%s</button>"
-        "</form>"
-        "<p class='note'>%s</p>",
-        is_ap ? T("First Setup", "Esmane seadistus") : T("WiFi Settings", "WiFi seaded"),
+        "<h2>%s</h2>"
+        "<div class='chk'><input type='radio' name='ip_mode' value='dhcp' id='ipd'%s"
+        " onchange='elIpToggle()'><label for='ipd' style='margin:0'>%s</label></div>"
+        "<div class='chk'><input type='radio' name='ip_mode' value='static' id='ips'%s"
+        " onchange='elIpToggle()'><label for='ips' style='margin:0'>%s</label></div>",
+        is_ap ? T("First Setup", "Esmane seadistus") : T("Network Settings", "V&otilde;rgu seaded"),
         is_ap ? T("<p>Connect this device to your WiFi network.</p>",
                   "<p>&#xDC;hendage seade WiFi v&otilde;rguga.</p>") : "",
         T("Network (SSID)", "V&otilde;rk (SSID)"),
+        s_wifi_ssid,
         T("Network name", "V&otilde;rgu nimi"),
         T("Password", "Parool"),
         T("Leave blank for open network", "J&auml;ta t&uuml;hjaks avatud v&otilde;rgu puhul"),
+        T("IP Configuration", "IP seadistus"),
+        s_ip_mode == 0 ? " checked" : "",
+        T("DHCP (automatic)", "DHCP (automaatne)"),
+        s_ip_mode == 1 ? " checked" : "",
+        T("Static IP", "Staatiline IP"));
+    httpd_resp_sendstr_chunk(req, buf);
+
+    snprintf(buf, sizeof(buf),
+        "<div id='ipfields'>"
+        "<label>%s<input type='text' name='ip_addr' maxlength='15' value='%s'"
+        " placeholder='192.168.1.50'></label>"
+        "<label>%s<input type='text' name='ip_mask' maxlength='15' value='%s'"
+        " placeholder='255.255.255.0'></label>"
+        "<label>%s<input type='text' name='ip_gw' maxlength='15' value='%s'"
+        " placeholder='192.168.1.1'></label>"
+        "<label>%s<input type='text' name='ip_dns' maxlength='15' value='%s'"
+        " placeholder='192.168.1.1'></label>"
+        "</div>"
+        "<script>function elIpToggle(){"
+        "document.getElementById('ipfields').style.display="
+        "document.getElementById('ips').checked?'block':'none';}"
+        "elIpToggle();</script>"
+        "<button type='submit'>%s</button>"
+        "</form>"
+        "<p class='note'>%s</p>",
+        T("IP Address", "IP aadress"), s_static_ip,
+        T("Subnet Mask", "Alamv&otilde;rgu mask"), s_static_mask,
+        T("Gateway", "L&uuml;&uuml;s"), s_static_gw,
+        T("DNS", "DNS"), s_static_dns,
         T("Save &amp; Restart", "Salvesta &amp; Taask&auml;ivita"),
         T("Device restarts and tries to connect. Returns to AP setup mode if it fails.",
           "Seade taask&auml;ivitub ja proovib &uuml;henduda. Kui ei &otilde;nnestu, l&auml;heb AP-re&zcaron;iimi."));
@@ -1255,7 +1330,7 @@ static esp_err_t wifi_get_handler(httpd_req_t *req)
 
 static esp_err_t wifi_post_handler(httpd_req_t *req)
 {
-    char body[512] = {0};
+    char body[768] = {0};
     int  len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
     body[len] = '\0';
@@ -1269,8 +1344,39 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    char ip_mode[8] = {0};
+    char ip_addr[IP_STR_LEN] = {0}, ip_mask[IP_STR_LEN] = {0};
+    char ip_gw[IP_STR_LEN]   = {0}, ip_dns[IP_STR_LEN]  = {0};
+    form_field(body, "ip_mode", ip_mode, sizeof(ip_mode));
+    form_field(body, "ip_addr", ip_addr, sizeof(ip_addr));
+    form_field(body, "ip_mask", ip_mask, sizeof(ip_mask));
+    form_field(body, "ip_gw",   ip_gw,   sizeof(ip_gw));
+    form_field(body, "ip_dns",  ip_dns,  sizeof(ip_dns));
+
+    bool   want_static = (strcmp(ip_mode, "static") == 0);
+    ip4_addr_t addr;
+    if (want_static && (!ip4addr_aton(ip_addr, &addr) || !ip4addr_aton(ip_mask, &addr))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid static IP configuration");
+        return ESP_FAIL;
+    }
+    if (ip_gw[0]  && !ip4addr_aton(ip_gw, &addr)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid gateway");
+        return ESP_FAIL;
+    }
+    if (ip_dns[0] && !ip4addr_aton(ip_dns, &addr)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid DNS");
+        return ESP_FAIL;
+    }
+
+    s_ip_mode = want_static ? 1 : 0;
+    strlcpy(s_static_ip,   ip_addr, sizeof(s_static_ip));
+    strlcpy(s_static_mask, ip_mask, sizeof(s_static_mask));
+    strlcpy(s_static_gw,   ip_gw,   sizeof(s_static_gw));
+    strlcpy(s_static_dns,  ip_dns,  sizeof(s_static_dns));
+    nvs_save_settings();
+
     esp_err_t err = nvs_save_creds(ssid, pass);
-    send_page_head(req, T("EleRelay \xe2\x80\x94 WiFi", "EleRelay \xe2\x80\x94 WiFi"));
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Network", "EleRelay \xe2\x80\x94 V&otilde;rk"));
     if (err == ESP_OK) {
         char safe[CRED_LEN * 6] = {0};
         html_escape(ssid, safe, sizeof(safe));
