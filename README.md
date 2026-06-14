@@ -111,16 +111,19 @@ The IP address is shown on the display. Open `http://<ip>/` in a browser to see 
 | URL | Description |
 |-----|-------------|
 | `/` | Live price table with relay state |
-| `/settings` | All runtime settings (including language) |
+| `/relay` | Relay schedule &amp; price limit settings |
+| `/settings` | Time, diagnostics, and language settings |
 | `/mqtt` | MQTT broker settings |
 | `/wifi` | Network settings: WiFi credentials, DHCP or static IP (address, mask, gateway, DNS) |
 | `/ota` | OTA firmware update (upload `.bin` from browser) |
 
 ## Settings
 
-All settings are changed on the **`/settings`** page and take effect immediately without a reboot.
+All settings take effect immediately without a reboot.
 
-### Relay & Price
+### Relay Settings (`/relay`)
+
+#### Relay & Price
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -130,7 +133,7 @@ All settings are changed on the **`/settings`** page and take effect immediately
 | Inverted | off | When on, relay is ON during *expensive* hours instead |
 | Fetch prices at | 23:00 | Hour of day for the daily price refresh (Elering publishes next-day prices ~14:00 EET) |
 
-### Price Limits
+#### Price Limits
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -139,7 +142,7 @@ All settings are changed on the **`/settings`** page and take effect immediately
 | Always OFF — enable | off | Enable always-OFF price limit |
 | Always OFF — limit (c/kWh) | 20.0 | Force relay OFF when spot price ≥ this value — takes priority over always-ON and min. run |
 
-Price limits accept decimal values (e.g. `0.5`, `15.3`). Both limits can be toggled on the `/settings` page and on the LCD touch config screen.
+Price limits accept decimal values (e.g. `0.5`, `15.3`). Both limits can be toggled on the `/relay` page and on the LCD touch config screen.
 
 ### Backlight
 
@@ -147,17 +150,19 @@ Price limits accept decimal values (e.g. `0.5`, `15.3`). Both limits can be togg
 |---------|---------|-------------|
 | Backlight brightness | 100 % | LCD backlight level; adjustable in 5 % steps on the touch config screen |
 
-### Diagnostics
+### Settings (`/settings`)
+
+#### Diagnostics
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Internet check interval | 5 min | How often to check internet connectivity (HEAD request to the Elering dashboard). 0 = disabled. Triggers the LCD offline warning (see below) when unreachable. |
 
-### Language
+#### Language
 
 Select **English** or **Eesti (Estonian)** from the Language drop-down on `/settings`. The choice applies to both the web interface and the LCD display immediately.
 
-### Time
+#### Time
 
 | Setting | Default | Description |
 |---------|---------|-------------|

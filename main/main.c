@@ -864,25 +864,27 @@ static void send_page_head(httpd_req_t *req, const char *title)
     snprintf(buf, sizeof(buf),
         "</head><body><nav>"
         "<a href='/'>&#x26A1; %s</a>"
+        "<a href='/relay'>&#x1F50C; %s</a>"
         "<a href='/settings'>&#x2699;&#xFE0F; %s</a>"
         "<a href='/mqtt'>&#x1F4E1; MQTT</a>"
         "<a href='/wifi'>&#x1F4F6; %s</a>"
         "<a href='/ota'>&#x1F4E6; OTA</a>"
         "</nav>",
         T("Prices", "Hinnad"),
+        T("Relay Settings", "Relee Seaded"),
         T("Settings", "Seaded"),
         T("Network", "V&otilde;rk"));
     httpd_resp_sendstr_chunk(req, buf);
 }
 
-/* ── /settings GET ───────────────────────────────────────────────────────── */
+/* ── /relay GET ──────────────────────────────────────────────────────────── */
 
-static esp_err_t settings_get_handler(httpd_req_t *req)
+static esp_err_t relay_get_handler(httpd_req_t *req)
 {
-    send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Relay Settings", "EleRelay \xe2\x80\x94 Relee Seaded"));
     char chunk[512];
-    snprintf(chunk, sizeof(chunk), "<h1>&#x2699;&#xFE0F; %s</h1>"
-        "<form method='POST' action='/settings'>", T("Settings", "Seaded"));
+    snprintf(chunk, sizeof(chunk), "<h1>&#x1F50C; %s</h1>"
+        "<form method='POST' action='/relay'>", T("Relay Settings", "Relee Seaded"));
     httpd_resp_sendstr_chunk(req, chunk);
 
     /* ── Relay / price settings ── */
@@ -1009,6 +1011,25 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
           " Laadimine kell 23:00 tagab t&auml;ieliku hinnakomplekti."));
     httpd_resp_sendstr_chunk(req, chunk);
 
+    snprintf(chunk, sizeof(chunk),
+        "<button type='submit'>%s</button>"
+        "</form></body></html>",
+        T("Save settings", "Salvesta seaded"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+/* ── /settings GET ───────────────────────────────────────────────────────── */
+
+static esp_err_t settings_get_handler(httpd_req_t *req)
+{
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
+    char chunk[512];
+    snprintf(chunk, sizeof(chunk), "<h1>&#x2699;&#xFE0F; %s</h1>"
+        "<form method='POST' action='/settings'>", T("Settings", "Seaded"));
+    httpd_resp_sendstr_chunk(req, chunk);
+
     /* ── Time settings ── */
     snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Time", "Aeg"));
     httpd_resp_sendstr_chunk(req, chunk);
@@ -1083,9 +1104,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── /settings POST ──────────────────────────────────────────────────────── */
+/* ── /relay POST ─────────────────────────────────────────────────────────── */
 
-static esp_err_t settings_post_handler(httpd_req_t *req)
+static esp_err_t relay_post_handler(httpd_req_t *req)
 {
     char body[1024] = {0};
     int len = httpd_req_recv(req, body, sizeof(body) - 1);
@@ -1121,6 +1142,75 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     int aoff_lim = (int)(atof(val) * 10.0f);
     aoff_lim = aoff_lim < -1000 ? -1000 : aoff_lim > 10000 ? 10000 : aoff_lim;
 
+    /* Apply immediately */
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_hours_window = window;
+    s_cheap_hours  = cheap;
+    s_relay_inv    = inv;
+    s_fetch_hour   = fetch_h;
+    s_min_run_minutes  = min_run;
+    s_always_on_en     = aon_en;
+    s_always_on_limit  = aon_lim;
+    s_always_off_en    = aoff_en;
+    s_always_off_limit = aoff_lim;
+    mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);   /* recompute with new cheap count */
+    xSemaphoreGive(s_mutex);
+
+    update_relay();          /* reflect new inversion + cheap hours instantly */
+    nvs_save_settings();
+    update_display();        /* reflect new settings on LCD immediately */
+
+    ESP_LOGI(TAG, "Relay settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
+             "min_run=%d aon=%d@%d aoff=%d@%d",
+             window, cheap, inv, fetch_h, min_run,
+             aon_en, aon_lim, aoff_en, aoff_lim);
+
+    send_page_head(req, T("EleRelay \xe2\x80\x94 Relay Settings", "EleRelay \xe2\x80\x94 Relee Seaded"));
+    char chunk[1280];
+    snprintf(chunk, sizeof(chunk),
+        "<h1>%s</h1>"
+        "<p>&#x2714; %s</p>"
+        "<ul style='font-size:.9rem;line-height:1.8'>"
+        "<li>%s <b>%d h</b></li>"
+        "<li>%s <b>%d</b></li>"
+        "<li>%s <b>%d min</b></li>"
+        "<li>%s <b>%s</b></li>"
+        "<li>%s <b>%02d:00</b></li>"
+        "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
+        "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
+        "</ul>"
+        "<p><a href='/relay'>%s</a>"
+        " &nbsp; <a href='/'>%s</a></p>"
+        "</body></html>",
+        T("Relay Settings", "Relee Seaded"),
+        T("Saved &amp; applied.", "Salvestatud &amp; rakendatud."),
+        T("Window:", "Aken:"), window,
+        T("Cheap hours:", "Odavad tunnid:"), cheap,
+        T("Min. continuous run:", "Min. j&auml;rjestikune k&auml;itus:"), min_run,
+        T("Relay inverted:", "Relee p&ouml;&ouml;ratud:"), inv ? T("yes","jah") : T("no","ei"),
+        T("Fetch at:", "Laadimine:"), fetch_h,
+        T("Always ON &le;:", "Alati SEES &le;:"),
+        aon_en ? T("on","sees") : T("off","v&auml;ljas"), aon_lim / 10.0f,
+        T("Always OFF &ge;:", "Alati V&auml;ljas &ge;:"),
+        aoff_en ? T("on","sees") : T("off","v&auml;ljas"), aoff_lim / 10.0f,
+        T("Back to relay settings", "Tagasi relee seadetesse"),
+        T("Price table", "Hinnad"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+/* ── /settings POST ──────────────────────────────────────────────────────── */
+
+static esp_err_t settings_post_handler(httpd_req_t *req)
+{
+    char body[512] = {0};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
+    body[len] = '\0';
+
+    char val[STR_LEN];
+
     /* Time settings */
     char ntp_server[STR_LEN] = {0};
     form_field(body, "ntp_server", ntp_server, sizeof(ntp_server));
@@ -1138,20 +1228,10 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
     /* Apply immediately */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_hours_window = window;
-    s_cheap_hours  = cheap;
-    s_relay_inv    = inv;
-    s_fetch_hour   = fetch_h;
-    s_min_run_minutes  = min_run;
-    s_always_on_en     = aon_en;
-    s_always_on_limit  = aon_lim;
-    s_always_off_en    = aoff_en;
-    s_always_off_limit = aoff_lim;
     strlcpy(s_ntp_server,       ntp_server,  sizeof(s_ntp_server));
     strlcpy(s_tz_str,           tz_str,      sizeof(s_tz_str));
     s_lang = new_lang;
     s_inet_check_min = inet_chk;
-    mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);   /* recompute with new cheap count */
     xSemaphoreGive(s_mutex);
     display_set_lang(new_lang);
 
@@ -1159,48 +1239,27 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     setenv("TZ", s_tz_str, 1);
     tzset();
 
-    update_relay();          /* reflect new inversion + cheap hours instantly */
     nvs_save_settings();
-    update_display();        /* reflect new settings on LCD immediately */
+    update_display();        /* reflect new language on LCD immediately */
 
-    ESP_LOGI(TAG, "Settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
-             "min_run=%d aon=%d@%d aoff=%d@%d "
-             "ntp=%s tz=%s",
-             window, cheap, inv, fetch_h, min_run,
-             aon_en, aon_lim, aoff_en, aoff_lim,
-             ntp_server, tz_str);
+    ESP_LOGI(TAG, "Settings updated: ntp=%s tz=%s lang=%d inet_chk=%d",
+             ntp_server, tz_str, new_lang, inet_chk);
 
     send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
-    char chunk[2048];
+    char chunk[768];
     snprintf(chunk, sizeof(chunk),
         "<h1>%s</h1>"
         "<p>&#x2714; %s</p>"
         "<ul style='font-size:.9rem;line-height:1.8'>"
-        "<li>%s <b>%d h</b></li>"
-        "<li>%s <b>%d</b></li>"
-        "<li>%s <b>%d min</b></li>"
-        "<li>%s <b>%s</b></li>"
-        "<li>%s <b>%02d:00</b></li>"
         "<li>NTP: <b>%s</b></li>"
         "<li>TZ: <b>%s</b></li>"
-        "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
-        "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
         "</ul>"
         "<p><a href='/settings'>%s</a>"
         " &nbsp; <a href='/'>%s</a></p>"
         "</body></html>",
         T("Settings", "Seaded"),
         T("Saved &amp; applied.", "Salvestatud &amp; rakendatud."),
-        T("Window:", "Aken:"), window,
-        T("Cheap hours:", "Odavad tunnid:"), cheap,
-        T("Min. continuous run:", "Min. j&auml;rjestikune k&auml;itus:"), min_run,
-        T("Relay inverted:", "Relee p&ouml;&ouml;ratud:"), inv ? T("yes","jah") : T("no","ei"),
-        T("Fetch at:", "Laadimine:"), fetch_h,
         ntp_server, tz_str,
-        T("Always ON &le;:", "Alati SEES &le;:"),
-        aon_en ? T("on","sees") : T("off","v&auml;ljas"), aon_lim / 10.0f,
-        T("Always OFF &ge;:", "Alati V&auml;ljas &ge;:"),
-        aoff_en ? T("on","sees") : T("off","v&auml;ljas"), aoff_lim / 10.0f,
         T("Back to settings", "Tagasi seadetesse"),
         T("Price table", "Hinnad"));
     httpd_resp_sendstr_chunk(req, chunk);
@@ -1849,7 +1908,7 @@ static httpd_handle_t start_webserver(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = 80;
     cfg.stack_size       = 8192;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 14;
 
     httpd_handle_t srv = NULL;
     if (httpd_start(&srv, &cfg) != ESP_OK) {
@@ -1860,6 +1919,8 @@ static httpd_handle_t start_webserver(void)
     static const httpd_uri_t u_root_ap   = { "/",         HTTP_GET,  wifi_get_handler,     NULL };
     static const httpd_uri_t u_wifi_get  = { "/wifi",     HTTP_GET,  wifi_get_handler,     NULL };
     static const httpd_uri_t u_wifi_post = { "/wifi",     HTTP_POST, wifi_post_handler,    NULL };
+    static const httpd_uri_t u_rel_get   = { "/relay",    HTTP_GET,  relay_get_handler,    NULL };
+    static const httpd_uri_t u_rel_post  = { "/relay",    HTTP_POST, relay_post_handler,   NULL };
     static const httpd_uri_t u_set_get   = { "/settings", HTTP_GET,  settings_get_handler, NULL };
     static const httpd_uri_t u_set_post  = { "/settings", HTTP_POST, settings_post_handler,NULL };
     static const httpd_uri_t u_mqtt_get  = { "/mqtt",     HTTP_GET,  mqtt_get_handler,     NULL };
@@ -1873,6 +1934,8 @@ static httpd_handle_t start_webserver(void)
     } else {
         httpd_register_uri_handler(srv, &u_root_sta);
         httpd_register_uri_handler(srv, &u_wifi_get);
+        httpd_register_uri_handler(srv, &u_rel_get);
+        httpd_register_uri_handler(srv, &u_rel_post);
         httpd_register_uri_handler(srv, &u_set_get);
         httpd_register_uri_handler(srv, &u_set_post);
         httpd_register_uri_handler(srv, &u_mqtt_get);
