@@ -864,7 +864,7 @@ static void send_page_head(httpd_req_t *req, const char *title)
     snprintf(buf, sizeof(buf),
         "</head><body><nav>"
         "<a href='/'>&#x26A1; %s</a>"
-        "<a href='/relay'>&#x1F50C; %s</a>"
+        "<a href='/relay'>&#x1F4CA; %s</a>"
         "<a href='/settings'>&#x2699;&#xFE0F; %s</a>"
         "<a href='/mqtt'>&#x1F4E1; MQTT</a>"
         "<a href='/wifi'>&#x1F4F6; %s</a>"
@@ -883,7 +883,7 @@ static esp_err_t relay_get_handler(httpd_req_t *req)
 {
     send_page_head(req, T("EleRelay \xe2\x80\x94 Relay Settings", "EleRelay \xe2\x80\x94 Relee Seaded"));
     char chunk[512];
-    snprintf(chunk, sizeof(chunk), "<h1>&#x1F50C; %s</h1>"
+    snprintf(chunk, sizeof(chunk), "<h1>&#x1F4CA; %s</h1>"
         "<form method='POST' action='/relay'>", T("Relay Settings", "Relee Seaded"));
     httpd_resp_sendstr_chunk(req, chunk);
 
