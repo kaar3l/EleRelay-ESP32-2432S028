@@ -200,7 +200,7 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 
 Labels (RELAY/RELEE, PRICE/HIND) left-aligned at the same x. Values (ON/OFF, price) right-column aligned — same color as relay state (green when ON, red when OFF). Unit `s/kWh` shown in small text alongside the price.
 
-White vertical lines in the bar chart mark the boundaries of each look-ahead window.
+The bar chart shows up to 24 h of upcoming price slots (96 × 15-min bars). White vertical lines mark the boundaries of each look-ahead window.
 
 ### LCD touch configuration
 

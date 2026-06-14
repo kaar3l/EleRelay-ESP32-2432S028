@@ -133,6 +133,7 @@ typedef struct {
 static EventGroupHandle_t s_wifi_eg;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+#define WIFI_ASSOC_BIT     BIT2
 static int s_retry_num = 0;
 
 static SemaphoreHandle_t s_mutex;
@@ -344,6 +345,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        xEventGroupSetBits(s_wifi_eg, WIFI_ASSOC_BIT);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_retry_num < WIFI_MAX_RETRY) {
             esp_wifi_connect(); s_retry_num++;
@@ -399,7 +402,16 @@ static bool wifi_start_sta(const char *ssid, const char *pass)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wcfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+
     EventBits_t bits = xEventGroupWaitBits(
+        s_wifi_eg, WIFI_ASSOC_BIT | WIFI_FAIL_BIT,
+        pdFALSE, pdFALSE, portMAX_DELAY);
+    if (bits & WIFI_FAIL_BIT) return false;
+
+    display_status("Connecting to WiFi",
+                    (s_ip_mode == 1) ? "Setting static IP..." : "Getting IP via DHCP...");
+
+    bits = xEventGroupWaitBits(
         s_wifi_eg, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
         pdFALSE, pdFALSE, portMAX_DELAY);
     return (bits & WIFI_CONNECTED_BIT) != 0;
@@ -2176,7 +2188,7 @@ void app_main(void)
 
     if (wifi_start_sta(ssid, pass)) {
         s_ap_mode = false;
-        display_status("Syncing time...", s_ip);
+        display_status("Testing internet connection", s_ip);
         ntp_sync();
         mqtt_start();
         start_webserver();

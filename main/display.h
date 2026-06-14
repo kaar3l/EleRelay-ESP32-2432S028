@@ -9,7 +9,7 @@ typedef struct {
     bool  is_on;      /* effective relay state (accounts for min_run forcing) */
 } disp_slot_t;
 
-#define DISP_MAX_BARS 80
+#define DISP_MAX_BARS 96   /* 24h at 4 slots/h */
 
 void display_init(void);
 void display_status(const char *line1, const char *line2);
