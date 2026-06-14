@@ -112,6 +112,7 @@ The IP address is shown on the display. Open `http://<ip>/` in a browser to see 
 |-----|-------------|
 | `/` | Live price table with relay state |
 | `/settings` | All runtime settings (including language) |
+| `/mqtt` | MQTT broker settings |
 | `/wifi` | Network settings: WiFi credentials, DHCP or static IP (address, mask, gateway, DNS) |
 | `/ota` | OTA firmware update (upload `.bin` from browser) |
 
@@ -170,7 +171,7 @@ Common TZ strings:
 
 ### MQTT
 
-When enabled, the device publishes to an MQTT broker on every relay update (once per minute).
+Configured on its own **`/mqtt`** page (not `/settings`). When enabled, the device publishes to an MQTT broker on every relay update (once per minute).
 
 | Setting | Default | Description |
 |---------|---------|-------------|

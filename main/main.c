@@ -865,6 +865,7 @@ static void send_page_head(httpd_req_t *req, const char *title)
         "</head><body><nav>"
         "<a href='/'>&#x26A1; %s</a>"
         "<a href='/settings'>&#x2699;&#xFE0F; %s</a>"
+        "<a href='/mqtt'>&#x1F4E1; MQTT</a>"
         "<a href='/wifi'>&#x1F4F6; %s</a>"
         "<a href='/ota'>&#x1F4E6; OTA</a>"
         "</nav>",
@@ -1043,79 +1044,6 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req, buf);
     }
 
-    /* ── MQTT settings ── */
-    httpd_resp_sendstr_chunk(req, "<h2>MQTT</h2>");
-
-    /* MQTT enabled checkbox */
-    {
-        char buf[320];
-        snprintf(buf, sizeof(buf),
-            "<div class='chk'>"
-            "<input type='checkbox' name='mqtt_en' id='mqtt_en'%s>"
-            "<label for='mqtt_en' style='margin:0;color:#222'>%s</label>"
-            "</div>",
-            s_mqtt_enabled ? " checked" : "",
-            T("Enable MQTT publishing", "Luba MQTT avaldamine"));
-        httpd_resp_sendstr_chunk(req, buf);
-    }
-
-    /* MQTT server */
-    {
-        char safe[STR_LEN * 6] = {0};
-        html_escape(s_mqtt_host, safe, sizeof(safe));
-        char buf[640];
-        snprintf(buf, sizeof(buf),
-            "<label>%s"
-            "<input type='text' name='mqtt_host' maxlength='%d' value='%s'"
-            " placeholder='e.g. 192.168.1.10 or broker.local'>"
-            "</label>",
-            T("MQTT server hostname / IP", "MQTT serveri aadress / IP"),
-            STR_LEN - 1, safe);
-        httpd_resp_sendstr_chunk(req, buf);
-    }
-
-    /* MQTT port */
-    {
-        char buf[192];
-        snprintf(buf, sizeof(buf),
-            "<label>%s"
-            "<input type='number' name='mqtt_port' min='1' max='65535' value='%d'>"
-            "</label>",
-            T("MQTT port", "MQTT port"), s_mqtt_port);
-        httpd_resp_sendstr_chunk(req, buf);
-    }
-
-    /* MQTT price topic */
-    {
-        char safe[STR_LEN * 6] = {0};
-        html_escape(s_mqtt_topic_price, safe, sizeof(safe));
-        char buf[512];
-        snprintf(buf, sizeof(buf),
-            "<label>%s"
-            "<input type='text' name='mqtt_topic_p' maxlength='%d' value='%s'>"
-            "</label>",
-            T("Price topic", "Hinna teema"), STR_LEN - 1, safe);
-        httpd_resp_sendstr_chunk(req, buf);
-    }
-
-    /* MQTT relay topic */
-    {
-        char safe[STR_LEN * 6] = {0};
-        html_escape(s_mqtt_topic_relay, safe, sizeof(safe));
-        char buf[640];
-        snprintf(buf, sizeof(buf),
-            "<label>%s"
-            "<input type='text' name='mqtt_topic_r' maxlength='%d' value='%s'>"
-            "</label>"
-            "<p class='note'>%s</p>",
-            T("Relay state topic", "Relee oleku teema"), STR_LEN - 1, safe,
-            T("Publishes price in c/kWh and relay state"
-              " (<code>ON</code>/<code>OFF</code>) with retain=1 on every relay update.",
-              "Avaldab hinna s/kWh ja relee oleku"
-              " (<code>ON</code>/<code>OFF</code>) retain=1 iga relee muutuse korral."));
-        httpd_resp_sendstr_chunk(req, buf);
-    }
-
     /* ── Diagnostics ── */
     snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Diagnostics", "Diagnostika"));
     httpd_resp_sendstr_chunk(req, chunk);
@@ -1202,24 +1130,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "tz_str", tz_str, sizeof(tz_str));
     if (tz_str[0] == '\0') strlcpy(tz_str, "UTC0", sizeof(tz_str));
 
-    /* MQTT settings */
-    bool mqtt_en = (strstr(body, "mqtt_en=on") || strstr(body, "mqtt_en=1"));
-
-    char mqtt_host[STR_LEN] = {0};
-    form_field(body, "mqtt_host", mqtt_host, sizeof(mqtt_host));
-
-    form_field(body, "mqtt_port", val, sizeof(val));
-    int mqtt_port = clamp(atoi(val), 1, 65535);
-    if (mqtt_port == 0) mqtt_port = 1883;
-
-    char mqtt_topic_p[STR_LEN] = {0};
-    form_field(body, "mqtt_topic_p", mqtt_topic_p, sizeof(mqtt_topic_p));
-    if (mqtt_topic_p[0] == '\0') strlcpy(mqtt_topic_p, "elerelay/price", sizeof(mqtt_topic_p));
-
-    char mqtt_topic_r[STR_LEN] = {0};
-    form_field(body, "mqtt_topic_r", mqtt_topic_r, sizeof(mqtt_topic_r));
-    if (mqtt_topic_r[0] == '\0') strlcpy(mqtt_topic_r, "elerelay/relay", sizeof(mqtt_topic_r));
-
     form_field(body, "lang", val, sizeof(val));
     int new_lang = clamp(atoi(val), 0, 1);
 
@@ -1239,11 +1149,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     s_always_off_limit = aoff_lim;
     strlcpy(s_ntp_server,       ntp_server,  sizeof(s_ntp_server));
     strlcpy(s_tz_str,           tz_str,      sizeof(s_tz_str));
-    s_mqtt_enabled = mqtt_en;
-    strlcpy(s_mqtt_host,        mqtt_host,   sizeof(s_mqtt_host));
-    s_mqtt_port    = mqtt_port;
-    strlcpy(s_mqtt_topic_price, mqtt_topic_p, sizeof(s_mqtt_topic_price));
-    strlcpy(s_mqtt_topic_relay, mqtt_topic_r, sizeof(s_mqtt_topic_relay));
     s_lang = new_lang;
     s_inet_check_min = inet_chk;
     mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);   /* recompute with new cheap count */
@@ -1257,15 +1162,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     update_relay();          /* reflect new inversion + cheap hours instantly */
     nvs_save_settings();
     update_display();        /* reflect new settings on LCD immediately */
-    mqtt_start();            /* restart MQTT client with new settings */
 
     ESP_LOGI(TAG, "Settings updated: window=%d cheap=%d inv=%d fetch_h=%d "
              "min_run=%d aon=%d@%d aoff=%d@%d "
-             "ntp=%s tz=%s mqtt=%d host=%s port=%d tp=%s tr=%s",
+             "ntp=%s tz=%s",
              window, cheap, inv, fetch_h, min_run,
              aon_en, aon_lim, aoff_en, aoff_lim,
-             ntp_server, tz_str, mqtt_en, mqtt_host, mqtt_port,
-             mqtt_topic_p, mqtt_topic_r);
+             ntp_server, tz_str);
 
     send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
     char chunk[2048];
@@ -1280,7 +1183,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         "<li>%s <b>%02d:00</b></li>"
         "<li>NTP: <b>%s</b></li>"
         "<li>TZ: <b>%s</b></li>"
-        "<li>MQTT: <b>%s</b>%s</li>"
         "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
         "<li>%s <b>%s</b> (%.1f c/kWh)</li>"
         "</ul>"
@@ -1295,13 +1197,163 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         T("Relay inverted:", "Relee p&ouml;&ouml;ratud:"), inv ? T("yes","jah") : T("no","ei"),
         T("Fetch at:", "Laadimine:"), fetch_h,
         ntp_server, tz_str,
-        mqtt_en ? T("enabled","lubatud") : T("disabled","keelatud"),
-        mqtt_en && mqtt_host[0] ? T(" \xe2\x80\x94 connecting...", " \xe2\x80\x94 \xc3\xbchendun...") : "",
         T("Always ON &le;:", "Alati SEES &le;:"),
         aon_en ? T("on","sees") : T("off","v&auml;ljas"), aon_lim / 10.0f,
         T("Always OFF &ge;:", "Alati V&auml;ljas &ge;:"),
         aoff_en ? T("on","sees") : T("off","v&auml;ljas"), aoff_lim / 10.0f,
         T("Back to settings", "Tagasi seadetesse"),
+        T("Price table", "Hinnad"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+/* ── /mqtt GET ───────────────────────────────────────────────────────────── */
+
+static esp_err_t mqtt_get_handler(httpd_req_t *req)
+{
+    send_page_head(req, "EleRelay \xe2\x80\x94 MQTT");
+    char chunk[512];
+    snprintf(chunk, sizeof(chunk), "<h1>&#x1F4E1; MQTT</h1>"
+        "<form method='POST' action='/mqtt'>");
+    httpd_resp_sendstr_chunk(req, chunk);
+
+    /* MQTT enabled checkbox */
+    {
+        char buf[320];
+        snprintf(buf, sizeof(buf),
+            "<div class='chk'>"
+            "<input type='checkbox' name='mqtt_en' id='mqtt_en'%s>"
+            "<label for='mqtt_en' style='margin:0;color:#222'>%s</label>"
+            "</div>",
+            s_mqtt_enabled ? " checked" : "",
+            T("Enable MQTT publishing", "Luba MQTT avaldamine"));
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
+    /* MQTT server */
+    {
+        char safe[STR_LEN * 6] = {0};
+        html_escape(s_mqtt_host, safe, sizeof(safe));
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "<label>%s"
+            "<input type='text' name='mqtt_host' maxlength='%d' value='%s'"
+            " placeholder='e.g. 192.168.1.10 or broker.local'>"
+            "</label>",
+            T("MQTT server hostname / IP", "MQTT serveri aadress / IP"),
+            STR_LEN - 1, safe);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
+    /* MQTT port */
+    {
+        char buf[192];
+        snprintf(buf, sizeof(buf),
+            "<label>%s"
+            "<input type='number' name='mqtt_port' min='1' max='65535' value='%d'>"
+            "</label>",
+            T("MQTT port", "MQTT port"), s_mqtt_port);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
+    /* MQTT price topic */
+    {
+        char safe[STR_LEN * 6] = {0};
+        html_escape(s_mqtt_topic_price, safe, sizeof(safe));
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+            "<label>%s"
+            "<input type='text' name='mqtt_topic_p' maxlength='%d' value='%s'>"
+            "</label>",
+            T("Price topic", "Hinna teema"), STR_LEN - 1, safe);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
+    /* MQTT relay topic */
+    {
+        char safe[STR_LEN * 6] = {0};
+        html_escape(s_mqtt_topic_relay, safe, sizeof(safe));
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "<label>%s"
+            "<input type='text' name='mqtt_topic_r' maxlength='%d' value='%s'>"
+            "</label>"
+            "<p class='note'>%s</p>",
+            T("Relay state topic", "Relee oleku teema"), STR_LEN - 1, safe,
+            T("Publishes price in c/kWh and relay state"
+              " (<code>ON</code>/<code>OFF</code>) with retain=1 on every relay update.",
+              "Avaldab hinna s/kWh ja relee oleku"
+              " (<code>ON</code>/<code>OFF</code>) retain=1 iga relee muutuse korral."));
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
+    snprintf(chunk, sizeof(chunk),
+        "<button type='submit'>%s</button>"
+        "</form></body></html>",
+        T("Save settings", "Salvesta seaded"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+/* ── /mqtt POST ──────────────────────────────────────────────────────────── */
+
+static esp_err_t mqtt_post_handler(httpd_req_t *req)
+{
+    char body[640] = {0};
+    int len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
+    body[len] = '\0';
+
+    char val[STR_LEN];
+
+    bool mqtt_en = (strstr(body, "mqtt_en=on") || strstr(body, "mqtt_en=1"));
+
+    char mqtt_host[STR_LEN] = {0};
+    form_field(body, "mqtt_host", mqtt_host, sizeof(mqtt_host));
+
+    form_field(body, "mqtt_port", val, sizeof(val));
+    int mqtt_port = clamp(atoi(val), 1, 65535);
+    if (mqtt_port == 0) mqtt_port = 1883;
+
+    char mqtt_topic_p[STR_LEN] = {0};
+    form_field(body, "mqtt_topic_p", mqtt_topic_p, sizeof(mqtt_topic_p));
+    if (mqtt_topic_p[0] == '\0') strlcpy(mqtt_topic_p, "elerelay/price", sizeof(mqtt_topic_p));
+
+    char mqtt_topic_r[STR_LEN] = {0};
+    form_field(body, "mqtt_topic_r", mqtt_topic_r, sizeof(mqtt_topic_r));
+    if (mqtt_topic_r[0] == '\0') strlcpy(mqtt_topic_r, "elerelay/relay", sizeof(mqtt_topic_r));
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_mqtt_enabled = mqtt_en;
+    strlcpy(s_mqtt_host,        mqtt_host,    sizeof(s_mqtt_host));
+    s_mqtt_port    = mqtt_port;
+    strlcpy(s_mqtt_topic_price, mqtt_topic_p, sizeof(s_mqtt_topic_price));
+    strlcpy(s_mqtt_topic_relay, mqtt_topic_r, sizeof(s_mqtt_topic_relay));
+    xSemaphoreGive(s_mutex);
+
+    nvs_save_settings();
+    mqtt_start();   /* restart MQTT client with new settings */
+
+    ESP_LOGI(TAG, "MQTT settings updated: en=%d host=%s port=%d tp=%s tr=%s",
+             mqtt_en, mqtt_host, mqtt_port, mqtt_topic_p, mqtt_topic_r);
+
+    send_page_head(req, "EleRelay \xe2\x80\x94 MQTT");
+    char chunk[512];
+    snprintf(chunk, sizeof(chunk),
+        "<h1>MQTT</h1>"
+        "<p>&#x2714; %s</p>"
+        "<ul style='font-size:.9rem;line-height:1.8'>"
+        "<li>MQTT: <b>%s</b>%s</li>"
+        "</ul>"
+        "<p><a href='/mqtt'>%s</a>"
+        " &nbsp; <a href='/'>%s</a></p>"
+        "</body></html>",
+        T("Saved &amp; applied.", "Salvestatud &amp; rakendatud."),
+        mqtt_en ? T("enabled","lubatud") : T("disabled","keelatud"),
+        mqtt_en && mqtt_host[0] ? T(" \xe2\x80\x94 connecting...", " \xe2\x80\x94 \xc3\xbchendun...") : "",
+        T("Back to MQTT settings", "Tagasi MQTT seadetesse"),
         T("Price table", "Hinnad"));
     httpd_resp_sendstr_chunk(req, chunk);
     httpd_resp_sendstr_chunk(req, NULL);
@@ -1810,6 +1862,8 @@ static httpd_handle_t start_webserver(void)
     static const httpd_uri_t u_wifi_post = { "/wifi",     HTTP_POST, wifi_post_handler,    NULL };
     static const httpd_uri_t u_set_get   = { "/settings", HTTP_GET,  settings_get_handler, NULL };
     static const httpd_uri_t u_set_post  = { "/settings", HTTP_POST, settings_post_handler,NULL };
+    static const httpd_uri_t u_mqtt_get  = { "/mqtt",     HTTP_GET,  mqtt_get_handler,     NULL };
+    static const httpd_uri_t u_mqtt_post = { "/mqtt",     HTTP_POST, mqtt_post_handler,    NULL };
     static const httpd_uri_t u_ota_get    = { "/ota",    HTTP_GET,  ota_get_handler,    NULL };
     static const httpd_uri_t u_ota_post   = { "/ota",    HTTP_POST, ota_post_handler,   NULL };
     static const httpd_uri_t u_fetch_post = { "/fetch",  HTTP_POST, fetch_post_handler, NULL };
@@ -1821,6 +1875,8 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(srv, &u_wifi_get);
         httpd_register_uri_handler(srv, &u_set_get);
         httpd_register_uri_handler(srv, &u_set_post);
+        httpd_register_uri_handler(srv, &u_mqtt_get);
+        httpd_register_uri_handler(srv, &u_mqtt_post);
         httpd_register_uri_handler(srv, &u_ota_get);
         httpd_register_uri_handler(srv, &u_ota_post);
         httpd_register_uri_handler(srv, &u_fetch_post);
