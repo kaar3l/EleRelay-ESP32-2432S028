@@ -13,7 +13,7 @@ typedef struct {
 
 void display_init(void);
 void display_status(const char *line1, const char *line2);
-void display_update(bool relay_on, bool ap_mode, const char *ssid,
+void display_update(bool relay_on, bool ap_mode, const char *ssid, bool inet_ok,
                     time_t now, const disp_slot_t *slots, int count, int cur_idx,
                     int cheap_hours, int hours_window, int win_offset);
 
@@ -65,6 +65,9 @@ void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           const disp_sysinfo_t *info);
 int  display_config_hittest(int tx, int ty, int page);
 void display_set_backlight(int pct);
+
+/* Offline "!" icon: direct draw/clear at the reserved icon rect, for fast blink */
+void display_blink_offline(bool visible);
 
 /* Language */
 #define LANG_EN 0

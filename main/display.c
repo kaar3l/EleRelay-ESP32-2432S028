@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -246,6 +247,9 @@ static void build_font16x16(void)
 /* ── Globals ────────────────────────────────────────────────────────────── */
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static int s_disp_lang = LANG_EN;
+/* Serializes LCD SPI access between display_update() (controller_task)
+ * and display_blink_offline() (offline_blink_task). */
+static SemaphoreHandle_t s_lcd_mutex = NULL;
 
 void display_set_lang(int lang) { s_disp_lang = lang; }
 
@@ -445,6 +449,43 @@ static void flush_stripe(int rows)
     esp_lcd_panel_io_tx_param(s_io, ILI_RAMWR, s_fb, LCD_W * rows * 2);
 }
 
+/* ── Offline "!" icon: drawn directly (bypasses stripe fb) for fast blink ── */
+#define ICON_X 126
+#define ICON_Y 26
+#define ICON_W 74
+#define ICON_H 73
+static uint16_t s_icon_fb[ICON_W * ICON_H];
+
+void display_blink_offline(bool visible)
+{
+    uint16_t bg = swap16(C_BLACK);
+    for (int i = 0; i < ICON_W * ICON_H; i++) s_icon_fb[i] = bg;
+
+    if (visible) {
+        uint16_t fg = swap16(C_RED);
+        /* "!" as bar (top) + square (bottom), centered */
+        const int bar_w = 16, bar_h = 40, gap = 8, sq = 16;
+        const int ox = (ICON_W - bar_w) / 2;
+        const int oy = (ICON_H - (bar_h + gap + sq)) / 2;
+        for (int y = oy; y < oy + bar_h; y++)
+            for (int x = ox; x < ox + bar_w; x++)
+                s_icon_fb[y * ICON_W + x] = fg;
+        for (int y = oy + bar_h + gap; y < oy + bar_h + gap + sq; y++)
+            for (int x = ox; x < ox + sq; x++)
+                s_icon_fb[y * ICON_W + x] = fg;
+    }
+
+    xSemaphoreTake(s_lcd_mutex, portMAX_DELAY);
+    uint8_t caset[4] = {(ICON_X >> 8) & 0xFF, ICON_X & 0xFF,
+                         ((ICON_X + ICON_W - 1) >> 8) & 0xFF, (ICON_X + ICON_W - 1) & 0xFF};
+    ili_cmd(ILI_CASET, caset, 4);
+    uint8_t raset[4] = {(ICON_Y >> 8) & 0xFF, ICON_Y & 0xFF,
+                         ((ICON_Y + ICON_H - 1) >> 8) & 0xFF, (ICON_Y + ICON_H - 1) & 0xFF};
+    ili_cmd(ILI_RASET, raset, 4);
+    esp_lcd_panel_io_tx_param(s_io, ILI_RAMWR, s_icon_fb, ICON_W * ICON_H * 2);
+    xSemaphoreGive(s_lcd_mutex);
+}
+
 /* ── ILI9341 initialisation sequence ───────────────────────────────────── */
 static void ili9341_init(void)
 {
@@ -533,6 +574,8 @@ void display_set_backlight(int pct)
 
 void display_init(void)
 {
+    s_lcd_mutex = xSemaphoreCreateMutex();
+
     /* Backlight via LEDC PWM — OFF during init */
     ledc_timer_config_t bl_timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
@@ -632,7 +675,7 @@ void display_status(const char *line1, const char *line2)
 }
 
 /* ── Render scene into current stripe (all draw calls self-clip) ─────────── */
-static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
+static void render_scene(bool relay_on, bool ap_mode, const char *ssid, bool inet_ok,
                          time_t now, const disp_slot_t *slots, int count,
                          int cur_idx, int cheap_hours, int hours_window, int win_offset)
 {
@@ -688,6 +731,12 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
         draw_str(unit_x, 83, "kWh",  C_WHITE, C_BLACK, 1);
     }
 
+    /* ── Reserve gap (between labels and values) for offline "!" icon ──
+     * display_blink_offline() draws/clears it directly at 3Hz when offline. */
+    if (!ap_mode && !inet_ok) {
+        fill_rect(126, 26, 74, 73, C_BLACK);
+    }
+
     /* ── WiFi / AP info + window (y 102..121) ───────────────────────────── */
     fill_rect(0, 100, LCD_W, 1, C_DKGRAY);
     /* Hours setting right-aligned: e.g. "6h/12h" */
@@ -697,6 +746,9 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid,
     draw_str(hx, 107, hbuf, C_YELLOW, C_BLACK, 1);
     if (ap_mode) {
         draw_str(4, 107, "AP: EleRelay-Setup  192.168.4.1", C_ORANGE, C_BLACK, 1);
+    } else if (!inet_ok) {
+        draw_str(4, 107, DT("NO INTERNET CONNECTION", "INTERNETIUHENDUS PUUDUB"),
+                 C_RED, C_BLACK, 1);
     } else {
         char wbuf[48];
         snprintf(wbuf, sizeof(wbuf), "WiFi: %s", ssid ? ssid : "");
@@ -1130,18 +1182,20 @@ int display_config_hittest(int tx, int ty, int page)
     return -1;
 }
 
-void display_update(bool relay_on, bool ap_mode, const char *ssid,
+void display_update(bool relay_on, bool ap_mode, const char *ssid, bool inet_ok,
                     time_t now, const disp_slot_t *slots, int count, int cur_idx,
                     int cheap_hours, int hours_window, int win_offset)
 {
+    xSemaphoreTake(s_lcd_mutex, portMAX_DELAY);
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
 
         memset(s_fb, 0, LCD_W * rows * 2);
-        render_scene(relay_on, ap_mode, ssid, now, slots, count, cur_idx,
+        render_scene(relay_on, ap_mode, ssid, inet_ok, now, slots, count, cur_idx,
                      cheap_hours, hours_window, win_offset);
         flush_stripe(rows);
     }
     s_sy0 = 0;
+    xSemaphoreGive(s_lcd_mutex);
 }

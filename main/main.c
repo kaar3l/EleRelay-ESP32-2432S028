@@ -90,6 +90,7 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_AOFF_EN   "aoff_en"
 #define NVS_KEY_AOFF_LIM  "aoff_lim"
 #define NVS_KEY_BL        "bl_pct"
+#define NVS_KEY_INET_CHK  "inet_chk_min"
 
 /* Picks between English and Estonian at runtime */
 #define T(en, et) (s_lang == LANG_ET ? (et) : (en))
@@ -111,6 +112,7 @@ static int  s_always_on_limit = 0;                      /* EUR/MWh (0 = 0 c/kWh)
 static bool s_always_off_en   = false;                  /* force OFF above limit */
 static int  s_always_off_limit = 200;                   /* EUR/MWh (200 = 20 c/kWh) */
 static int  s_backlight_pct   = 100;                    /* 0-100 % */
+static int  s_inet_check_min  = 5;                      /* 0 = disabled */
 
 static char s_ntp_server[STR_LEN]       = "pool.ntp.org";
 static char s_tz_str[STR_LEN]           = "EET-2EEST,M3.5.0/3,M10.5.0/4";
@@ -142,6 +144,8 @@ static int               s_hour_count    = 0;
 static bool              s_relay_on      = false;
 static time_t            s_relay_on_since = 0;  /* when relay last turned ON, 0 if OFF */
 static time_t            s_last_fetch    = 0;
+static bool              s_inet_ok       = true;
+static time_t            s_last_inet_check = 0;
 static time_t            s_last_slot_ts  = 0;  /* end of last fetched slot (ts + 900) */
 
 typedef enum {
@@ -222,6 +226,7 @@ static void nvs_load_settings(void)
     if (nvs_get_u8(h, NVS_KEY_LANG,    &v) == ESP_OK) s_lang         = v;
     if (nvs_get_u8(h, NVS_KEY_BL,      &v) == ESP_OK) s_backlight_pct = v;
     if (nvs_get_u8(h, NVS_KEY_IP_MODE, &v) == ESP_OK) s_ip_mode      = v;
+    if (nvs_get_u8(h, NVS_KEY_INET_CHK, &v) == ESP_OK) s_inet_check_min = v;
 
     uint16_t port;
     if (nvs_get_u16(h, NVS_KEY_MQTT_PORT, &port) == ESP_OK) s_mqtt_port = port;
@@ -263,6 +268,7 @@ static esp_err_t nvs_save_settings(void)
     err |= nvs_set_u8(h,  NVS_KEY_LANG,      (uint8_t)s_lang);
     err |= nvs_set_u8(h,  NVS_KEY_BL,        (uint8_t)s_backlight_pct);
     err |= nvs_set_u8(h,  NVS_KEY_IP_MODE,   (uint8_t)s_ip_mode);
+    err |= nvs_set_u8(h,  NVS_KEY_INET_CHK,  (uint8_t)s_inet_check_min);
     err |= nvs_set_u16(h, NVS_KEY_MQTT_PORT,  (uint16_t)s_mqtt_port);
     err |= nvs_set_u16(h, NVS_KEY_MIN_RUN,   (uint16_t)s_min_run_minutes);
     err |= nvs_set_u8(h,  NVS_KEY_AON_EN,    (uint8_t)s_always_on_en);
@@ -583,6 +589,23 @@ static void mark_cheap_hours(hour_slot_t *slots, int count, int min_run_minutes)
 
         i = j;
     }
+}
+
+/* ── Internet connectivity check ─────────────────────────────────────────── */
+
+static bool inet_check(void)
+{
+    esp_http_client_config_t cfg = {
+        .url               = "https://dashboard.elering.ee/",
+        .method            = HTTP_METHOD_HEAD,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 5000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_err_t err    = esp_http_client_perform(client);
+    int       status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    return err == ESP_OK && status >= 200 && status < 400;
 }
 
 static esp_err_t fetch_prices(void)
@@ -1093,6 +1116,24 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req, buf);
     }
 
+    /* ── Diagnostics ── */
+    snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Diagnostics", "Diagnostika"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+            "<label>%s"
+            "<input type='number' name='inet_chk' min='0' max='60' value='%d'>"
+            "</label>"
+            "<p class='note'>%s</p>",
+            T("Internet check interval (minutes, 0 = disabled)",
+              "Interneti kontrolli intervall (minutit, 0 = v&auml;lja l&uuml;litatud)"),
+            s_inet_check_min,
+            T("Periodically checks internet connectivity. Shows a warning on the LCD if unreachable.",
+              "Kontrollib perioodiliselt interneti&uuml;hendust. Kuvab LCD-l hoiatuse, kui &uuml;hendus puudub."));
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
     /* ── Language / Keel ── */
     httpd_resp_sendstr_chunk(req, "<h2>Keel / Language</h2>");
     snprintf(chunk, sizeof(chunk),
@@ -1182,6 +1223,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "lang", val, sizeof(val));
     int new_lang = clamp(atoi(val), 0, 1);
 
+    form_field(body, "inet_chk", val, sizeof(val));
+    int inet_chk = clamp(atoi(val), 0, 60);
+
     /* Apply immediately */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_hours_window = window;
@@ -1201,6 +1245,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     strlcpy(s_mqtt_topic_price, mqtt_topic_p, sizeof(s_mqtt_topic_price));
     strlcpy(s_mqtt_topic_relay, mqtt_topic_r, sizeof(s_mqtt_topic_relay));
     s_lang = new_lang;
+    s_inet_check_min = inet_chk;
     mark_cheap_hours(s_hours, s_hour_count, s_min_run_minutes);   /* recompute with new cheap count */
     xSemaphoreGive(s_mutex);
     display_set_lang(new_lang);
@@ -1871,7 +1916,7 @@ static void update_display(void)
     }
 
     int win_offset = (s_hours_window > 0) ? cur_idx % (s_hours_window * 4) : 0;
-    display_update(relay_on, ap_mode, s_wifi_ssid,
+    display_update(relay_on, ap_mode, s_wifi_ssid, s_inet_ok,
                    now, dslots, dcount, 0,
                    s_cheap_hours, s_hours_window, win_offset);
 }
@@ -2073,6 +2118,27 @@ static void touch_task(void *arg)
     }
 }
 
+/* ── Offline blink task: 3Hz "!" icon while no internet ─────────────────── */
+
+static void offline_blink_task(void *arg)
+{
+    bool visible = false;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(167));
+        if (s_screen != SCREEN_MAIN) {
+            visible = false;   /* config page covers icon area; nothing to clear */
+            continue;
+        }
+        if (!s_ap_mode && !s_inet_ok) {
+            visible = !visible;
+            display_blink_offline(visible);
+        } else if (visible) {
+            visible = false;
+            display_blink_offline(false);
+        }
+    }
+}
+
 /* ── Controller task ─────────────────────────────────────────────────────── */
 
 static void controller_task(void *arg)
@@ -2094,6 +2160,17 @@ static void controller_task(void *arg)
         if (now % 60 != 0) continue;   /* minute-level work below */
 
         struct tm ti; localtime_r(&now, &ti);
+
+        if (s_inet_check_min > 0 &&
+            now - s_last_inet_check >= (time_t)s_inet_check_min * 60) {
+            s_last_inet_check = now;
+            bool ok = inet_check();
+            if (ok != s_inet_ok) {
+                s_inet_ok = ok;
+                ESP_LOGW(TAG, "Internet connectivity: %s", ok ? "OK" : "LOST");
+                update_display();
+            }
+        }
 
         bool stale     = (s_hour_count == 0 || now - s_last_fetch > 25 * 3600);
         bool at_time   = (ti.tm_hour == s_fetch_hour);
@@ -2194,6 +2271,7 @@ void app_main(void)
         start_webserver();
         xTaskCreate(controller_task, "ctrl", 8192, NULL, 5, NULL);
         xTaskCreate(touch_task, "touch", 8192, NULL, 4, NULL);
+        xTaskCreate(offline_blink_task, "blink", 2048, NULL, 2, NULL);
     } else {
         s_ap_mode = true;
         ESP_LOGW(TAG, "STA failed — AP mode");

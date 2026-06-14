@@ -9,6 +9,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 - **Always-ON price limit** — force relay ON whenever the spot price is at or below a set threshold (overrides normal schedule)
 - **Always-OFF price limit** — force relay OFF whenever the spot price is at or above a set threshold (highest priority; overrides always-ON and min-run)
 - ILI9341 320×240 colour display showing relay state, current price, and a price bar chart
+- **Offline warning** — large blinking "!" icon on the LCD when the device has no internet connection
 - **Touchscreen support** — tap the display to open a 4-page settings screen; adjust window size, cheap hours, minimum run time, always-ON/OFF thresholds, enable/disable price limits, and set backlight brightness directly on the device; auto-closes after 60 s of inactivity
 - **English / Estonian UI** — language selector on the `/settings` page; applies to both the web interface and the LCD
 - Captive-portal style web UI (no app needed) for all settings
@@ -145,6 +146,12 @@ Price limits accept decimal values (e.g. `0.5`, `15.3`). Both limits can be togg
 |---------|---------|-------------|
 | Backlight brightness | 100 % | LCD backlight level; adjustable in 5 % steps on the touch config screen |
 
+### Diagnostics
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Internet check interval | 5 min | How often to check internet connectivity (HEAD request to the Elering dashboard). 0 = disabled. Triggers the LCD offline warning (see below) when unreachable. |
+
 ### Language
 
 Select **English** or **Eesti (Estonian)** from the Language drop-down on `/settings`. The choice applies to both the web interface and the LCD display immediately.
@@ -201,6 +208,10 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 Labels (RELAY/RELEE, PRICE/HIND) left-aligned at the same x. Values (ON/OFF, price) right-column aligned — same color as relay state (green when ON, red when OFF). Unit `s/kWh` shown in small text alongside the price.
 
 The bar chart shows up to 24 h of upcoming price slots (96 × 15-min bars). White vertical lines mark the boundaries of each look-ahead window.
+
+### Offline warning
+
+If the device loses internet connectivity (while still connected to WiFi), a large red "!" icon blinks at 3 Hz between the RELAY/PRICE labels and their values. It disappears once the internet connection is restored, and is suppressed while in AP mode or on the touch config screen.
 
 ### LCD touch configuration
 
