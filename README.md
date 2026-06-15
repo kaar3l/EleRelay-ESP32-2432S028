@@ -210,7 +210,7 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 │ PRICE              8.7 s/        │  ← price label + current price (same color)
 │                        kWh       │
 ├──────────────────────────────────┤
-│ WiFi: MyNetwork        6h/12h    │  ← WiFi info + window setting
+│ WiFi: MyNetwork         6h/12h   │  ← WiFi info + cheap/window hours (large, right-aligned)
 ├──────────────────────────────────┤
 │ ▁▂▃█▇▅▄▃▂▁▂▃▄▅▆▇▅▄▃▂▁▂▃▄       │  ← price bar chart (green=cheap, red=expensive)
 └──────────────────────────────────┘
@@ -219,6 +219,10 @@ mosquitto_sub -h 192.168.1.10 -t 'elerelay/#' -v
 Labels (RELAY/RELEE, PRICE/HIND) left-aligned at the same x. Values (ON/OFF, price) right-column aligned — same color as relay state (green when ON, red when OFF). Unit `s/kWh` shown in small text alongside the price.
 
 The bar chart shows up to 24 h of upcoming price slots (96 × 15-min bars). White vertical lines mark the boundaries of each look-ahead window.
+
+### Boot screen
+
+While booting and connecting to WiFi, the LCD shows the EleRelay logo centered below the header, with the connection status (e.g. "Connecting to WiFi", "Testing internet") and sub-status (e.g. IP address) below it in white.
 
 ### Offline warning
 

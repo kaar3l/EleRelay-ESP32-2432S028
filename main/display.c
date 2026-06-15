@@ -761,8 +761,8 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid, bool ine
     /* Hours setting right-aligned: e.g. "6h/12h" */
     char hbuf[12];
     snprintf(hbuf, sizeof(hbuf), "%dh/%dh", cheap_hours, hours_window);
-    int hx = LCD_W - (int)strlen(hbuf) * 8 - 4;
-    draw_str(hx, 107, hbuf, C_YELLOW, C_BLACK, 1);
+    int hx = LCD_W - (int)strlen(hbuf) * 16;
+    draw_str(hx, 103, hbuf, C_YELLOW, C_BLACK, 2);
     if (ap_mode) {
         draw_str(4, 107, "AP: EleRelay-Setup  192.168.4.1", C_ORANGE, C_BLACK, 1);
     } else if (!inet_ok) {
