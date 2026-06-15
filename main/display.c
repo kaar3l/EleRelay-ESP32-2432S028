@@ -23,6 +23,7 @@
 #include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
+#include "logo_img.h"
 
 static const char *TAG = "touch";
 
@@ -366,6 +367,21 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color)
     }
 }
 
+/* Draw RGB565 image (top-left at x,y), clipped to current stripe */
+static void draw_image(int x, int y, int w, int h, const uint16_t *img)
+{
+    for (int row = 0; row < h; row++) {
+        int py = y + row;
+        int srow = py - s_sy0;
+        if (srow < 0 || srow >= STRIPE_H) continue;
+        for (int col = 0; col < w; col++) {
+            int px = x + col;
+            if (px < 0 || px >= LCD_W) continue;
+            s_fb[srow * LCD_W + px] = swap16(img[row * w + col]);
+        }
+    }
+}
+
 /* Draw single char at pixel position, scale ×1 or larger */
 static void draw_char(int x, int y, char ch, uint16_t fg, uint16_t bg, int scale)
 {
@@ -653,12 +669,15 @@ void display_status(const char *line1, const char *line2)
 
         fill_rect(0, 24, LCD_W, 1, C_DKGRAY);
 
-        /* line1 — main status, scale 2 (16 px tall), vertically centred */
+        /* logo, centred below header */
+        draw_image((LCD_W - S_LOGO_W) / 2, 32, S_LOGO_W, S_LOGO_H, s_logo);
+
+        /* line1 — main status, scale 2 (16 px tall), below logo */
         if (line1) {
             int len = (int)strlen(line1);
             int x = (LCD_W - len * 16) / 2;
             if (x < 4) x = 4;
-            draw_str(x, 90, line1, C_WHITE, C_BLACK, 2);
+            draw_str(x, 122, line1, C_WHITE, C_BLACK, 2);
         }
 
         /* line2 — sub-status, scale 1, below line1 */
@@ -666,7 +685,7 @@ void display_status(const char *line1, const char *line2)
             int len = (int)strlen(line2);
             int x = (LCD_W - len * 8) / 2;
             if (x < 4) x = 4;
-            draw_str(x, 116, line2, C_GRAY, C_BLACK, 1);
+            draw_str(x, 148, line2, C_GRAY, C_BLACK, 1);
         }
 
         flush_stripe(rows);
