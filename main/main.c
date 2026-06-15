@@ -2403,6 +2403,10 @@ void app_main(void)
     snprintf(wifi_msg, sizeof(wifi_msg), "SSID: %s", ssid);
     display_status("Connecting to WiFi", wifi_msg);
 
+    /* Boot reached this point without crashing — cancel any pending
+     * rollback so the bootloader doesn't revert to the previous OTA slot. */
+    esp_ota_mark_app_valid_cancel_rollback();
+
     if (wifi_start_sta(ssid, pass)) {
         s_ap_mode = false;
         display_status("Testing internet connection", s_ip);

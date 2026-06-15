@@ -17,6 +17,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 - **MQTT** publishing of current price and relay state
 - Configurable NTP server and POSIX timezone string
 - Fallback to AP mode ("EleRelay-Setup") when WiFi credentials are missing or wrong
+- **Automatic WiFi reconnect** — if the router/AP drops or reboots, the device keeps retrying to reconnect every 30 s indefinitely
 
 ## Hardware
 
@@ -52,6 +53,10 @@ Once the device is running on your network, you can flash new firmware directly 
 4. The page shows an upload progress bar, then reboots automatically
 
 The device uses a dual OTA partition scheme (`ota_0` / `ota_1`). Each update alternates between slots, so the previous firmware remains on flash until the next update overwrites it.
+
+**Automatic rollback** — app rollback is enabled (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`). If a newly flashed firmware crashes/reboots before completing boot, the bootloader automatically reverts to the previous working slot. A successful boot marks the new image valid, cancelling rollback.
+
+> **Bootloader update required** — enabling rollback changed the bootloader. If flashing from an older version, the first update after this change must be done via USB (full `write_flash` of all four regions, see below), since OTA cannot update the bootloader. Subsequent updates can use `/ota` again.
 
 > **First flash only** — the initial flash via esptool must write all four regions (bootloader, partition table, OTA data, and app). Subsequent updates can be done entirely over WiFi via `/ota`.
 
