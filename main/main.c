@@ -354,12 +354,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
         xEventGroupSetBits(s_wifi_eg, WIFI_ASSOC_BIT);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(s_wifi_eg, WIFI_CONNECTED_BIT);
         if (s_retry_num < WIFI_MAX_RETRY) {
             esp_wifi_connect(); s_retry_num++;
             ESP_LOGW(TAG, "WiFi retry %d/%d", s_retry_num, WIFI_MAX_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_eg, WIFI_FAIL_BIT);
-            ESP_LOGE(TAG, "WiFi failed after %d retries", WIFI_MAX_RETRY);
+            ESP_LOGE(TAG, "WiFi failed after %d retries — wifi_watchdog_task will keep retrying", WIFI_MAX_RETRY);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *evt = (ip_event_got_ip_t *)data;
@@ -2239,6 +2240,26 @@ static void touch_task(void *arg)
 
 /* ── Offline blink task: 3Hz "!" icon while no internet ─────────────────── */
 
+/* ── STA reconnect watchdog ──────────────────────────────────────────────
+ * wifi_event_handler stops retrying after WIFI_MAX_RETRY consecutive
+ * failures. This task notices when STA is still disconnected and kicks
+ * off another round of retries, so a reboot of the AP doesn't strand the
+ * device permanently. */
+static void wifi_watchdog_task(void *arg)
+{
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        if (s_ap_mode) continue;
+        EventBits_t bits = xEventGroupGetBits(s_wifi_eg);
+        if (!(bits & WIFI_CONNECTED_BIT)) {
+            ESP_LOGW(TAG, "WiFi still disconnected — retrying");
+            s_retry_num = 0;
+            xEventGroupClearBits(s_wifi_eg, WIFI_FAIL_BIT);
+            esp_wifi_connect();
+        }
+    }
+}
+
 static void offline_blink_task(void *arg)
 {
     bool visible = false;
@@ -2391,6 +2412,7 @@ void app_main(void)
         xTaskCreate(controller_task, "ctrl", 8192, NULL, 5, NULL);
         xTaskCreate(touch_task, "touch", 8192, NULL, 4, NULL);
         xTaskCreate(offline_blink_task, "blink", 2048, NULL, 2, NULL);
+        xTaskCreate(wifi_watchdog_task, "wifi_wd", 2048, NULL, 3, NULL);
     } else {
         s_ap_mode = true;
         ESP_LOGW(TAG, "STA failed — AP mode");
