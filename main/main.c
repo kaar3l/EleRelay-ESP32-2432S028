@@ -1581,11 +1581,10 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 {
     char chunk[1024];
 
-    send_page_head(req, T("Elering Smart Relay", "Elering Smart Relee"));
+    send_page_head(req, "EleRelay");
     {
         char h1[64];
-        snprintf(h1, sizeof(h1), "<h1>&#x26A1; %s</h1>",
-                 T("Elering Smart Relay", "Elering Smart Relee"));
+        snprintf(h1, sizeof(h1), "<h1>&#x26A1; %s</h1>", "EleRelay");
         httpd_resp_sendstr_chunk(req, h1);
     }
 
