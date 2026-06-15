@@ -1,4 +1,4 @@
-menu "Elering Smart Relay"
+menu "EleRelay"
 
     config WIFI_SSID
         string "WiFi SSID"

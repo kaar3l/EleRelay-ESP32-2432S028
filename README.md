@@ -76,7 +76,7 @@ git clone https://github.com/kaar3l/EleRelay-ESP32-2432S028.git
 cd EleRelay-ESP32-2432S028
 
 # Optional: set compile-time defaults
-idf.py menuconfig   # → Elering Smart Relay
+idf.py menuconfig   # → EleRelay
 
 idf.py build
 ```

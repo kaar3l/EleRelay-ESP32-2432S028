@@ -2408,7 +2408,7 @@ void app_main(void)
 
     if (wifi_start_sta(ssid, pass)) {
         s_ap_mode = false;
-        display_status("Testing internet connection", s_ip);
+        display_status("Testing internet", s_ip);
         ntp_sync();
         mqtt_start();
         start_webserver();

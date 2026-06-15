@@ -747,7 +747,7 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid, bool ine
     if (ap_mode) {
         draw_str(4, 107, "AP: EleRelay-Setup  192.168.4.1", C_ORANGE, C_BLACK, 1);
     } else if (!inet_ok) {
-        draw_str(4, 107, DT("NO INTERNET CONNECTION", "INTERNETIUHENDUS PUUDUB"),
+        draw_str(4, 107, DT("NO INTERNET CONNECTION", "INTERNETI UHENDUS PUUDUB"),
                  C_RED, C_BLACK, 1);
     } else {
         char wbuf[48];
