@@ -24,7 +24,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 | Item | Details |
 |------|---------|
 | Board | ESP-2432S028 (ESP32-D0WD-V3, 4 MB flash) |
-| Display | ILI9341 2.8″ 320×240 TFT (SPI2, on-board) |
+| Display | ST7789 2.8″ 320×240 TFT (SPI2, on-board; default via `sdkconfig.defaults`). For the ILI9341 variant disable **Use ST7789 display driver** in menuconfig — wrong driver shows a mirrored image. |
 | Touch | XPT2046 resistive touch controller (SPI3, on-board) |
 | Relay | Any 5 V relay module with active-LOW or active-HIGH IN |
 | Default relay GPIO | GPIO 22 (configurable via `idf.py menuconfig`) |
