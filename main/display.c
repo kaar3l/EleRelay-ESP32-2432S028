@@ -248,11 +248,15 @@ static void build_font16x16(void)
 /* ── Globals ────────────────────────────────────────────────────────────── */
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static int s_disp_lang = LANG_EN;
-/* Serializes LCD SPI access between display_update() (controller_task)
- * and display_blink_offline() (offline_blink_task). */
+/* Serializes LCD SPI access and the shared stripe framebuffer between all
+ * public drawing functions (display_status, display_update,
+ * display_show_config, display_blink_offline), which run in several tasks. */
 static SemaphoreHandle_t s_lcd_mutex = NULL;
 
 void display_set_lang(int lang) { s_disp_lang = lang; }
+
+static const char *s_ap_pass = NULL;
+void display_set_ap_password(const char *pass) { s_ap_pass = pass; }
 
 /* Picks between English and Estonian string (LCD must stay ASCII) */
 #define DT(en, et) (s_disp_lang == LANG_ET ? (et) : (en))
@@ -658,6 +662,7 @@ void display_init(void)
 /* ── Simple status screen shown during boot / WiFi connect ──────────────── */
 void display_status(const char *line1, const char *line2)
 {
+    xSemaphoreTake(s_lcd_mutex, portMAX_DELAY);
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
@@ -691,6 +696,7 @@ void display_status(const char *line1, const char *line2)
         flush_stripe(rows);
     }
     s_sy0 = 0;
+    xSemaphoreGive(s_lcd_mutex);
 }
 
 /* ── Render scene into current stripe (all draw calls self-clip) ─────────── */
@@ -776,6 +782,20 @@ static void render_scene(bool relay_on, bool ap_mode, const char *ssid, bool ine
 
     /* ── Price bar chart (y 124..239) ────────────────────────────────── */
     fill_rect(0, 122, LCD_W, 1, C_DKGRAY);
+
+    /* AP mode: no prices — use the chart area for setup instructions */
+    if (ap_mode) {
+        draw_str(4, 128, DT("Setup WiFi:", "Seadistusvork:"), C_YELLOW, C_BLACK, 1);
+        draw_str(4, 140, "EleRelay-Setup", C_WHITE, C_BLACK, 2);
+        draw_str(4, 164, DT("Password:", "Parool:"), C_YELLOW, C_BLACK, 1);
+        if (s_ap_pass) {
+            int sc = strlen(s_ap_pass) <= 19 ? 2 : 1;
+            draw_str(4, 176, s_ap_pass, C_WHITE, C_BLACK, sc);
+        }
+        draw_str(4, 200, DT("Then open:", "Seejarel ava:"), C_YELLOW, C_BLACK, 1);
+        draw_str(4, 212, "192.168.4.1", C_WHITE, C_BLACK, 2);
+        return;
+    }
 
     int bars = count < DISP_MAX_BARS ? count : DISP_MAX_BARS;
     if (bars > 0) {
@@ -1105,6 +1125,22 @@ static void render_config_page4(const disp_sysinfo_t *info)
 
     ROW(199, DT("Relay:", "Relay:"), info->relay_reason, C_WHITE);
 
+    /* Web login, right column of the system block */
+    draw_str(168, 151, DT("Web user:", "Kasutaja:"), C_YELLOW, C_BLACK, 1);
+    draw_str(168, 163, "admin", C_WHITE, C_BLACK, 1);
+    draw_str(168, 175, DT("Password:", "Parool:"), C_YELLOW, C_BLACK, 1);
+    if (info->web_pass) {
+        /* 19 chars fit in the right column; wrap onto a second row
+         * (password is at most 32 chars) */
+        char pbuf[20];
+        strlcpy(pbuf, info->web_pass, sizeof(pbuf));
+        draw_str(168, 187, pbuf, C_WHITE, C_BLACK, 1);
+        if (strlen(info->web_pass) > 19) {
+            strlcpy(pbuf, info->web_pass + 19, sizeof(pbuf));
+            draw_str(168, 199, pbuf, C_WHITE, C_BLACK, 1);
+        }
+    }
+
 #undef ROW
 #undef LBL_X
 #undef VAL_X
@@ -1119,6 +1155,7 @@ void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
                           int backlight_pct,
                           const disp_sysinfo_t *info)
 {
+    xSemaphoreTake(s_lcd_mutex, portMAX_DELAY);
     for (s_sy0 = 0; s_sy0 < LCD_H; s_sy0 += STRIPE_H) {
         int rows = STRIPE_H;
         if (s_sy0 + rows > LCD_H) rows = LCD_H - s_sy0;
@@ -1134,6 +1171,7 @@ void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
         flush_stripe(rows);
     }
     s_sy0 = 0;
+    xSemaphoreGive(s_lcd_mutex);
 }
 
 int display_config_hittest(int tx, int ty, int page)

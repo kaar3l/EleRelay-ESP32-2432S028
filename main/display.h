@@ -56,6 +56,7 @@ typedef struct {
     uint32_t    uptime_sec;
     time_t      last_fetch;     /* 0 = never */
     char        relay_reason[16];
+    const char *web_pass;       /* device password (web login + setup AP) */
 } disp_sysinfo_t;
 
 void display_show_config(int cheap_hours, int hours_window, int min_run_minutes,
@@ -68,6 +69,9 @@ void display_set_backlight(int pct);
 
 /* Offline "!" icon: direct draw/clear at the reserved icon rect, for fast blink */
 void display_blink_offline(bool visible);
+
+/* Setup-AP password shown on the main screen in AP mode (pointer is kept) */
+void display_set_ap_password(const char *pass);
 
 /* Language */
 #define LANG_EN 0

@@ -15,4 +15,5 @@ idf_component_register(
         esp_lcd
         mqtt
         app_update
+        bootloader_support
 )

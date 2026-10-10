@@ -15,6 +15,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -40,6 +41,9 @@
 #include "esp_ota_ops.h"
 #include "esp_app_format.h"
 #include "esp_timer.h"
+#include "esp_random.h"
+#include "bootloader_random.h"
+#include "mbedtls/base64.h"
 #include "display.h"
 
 static const char *TAG = "elerelay";
@@ -91,9 +95,19 @@ static const char *TAG = "elerelay";
 #define NVS_KEY_AOFF_LIM  "aoff_lim"
 #define NVS_KEY_BL        "bl_pct"
 #define NVS_KEY_INET_CHK  "inet_chk_min"
+#define NVS_KEY_DEV_PASS  "dev_pass"
+
+/* Web UI login user. The password (s_dev_pass) is also the setup-AP WPA2 key. */
+#define AUTH_USER        "admin"
+#define DEV_PASS_MIN     8      /* WPA2 minimum */
+#define DEV_PASS_MAX     32     /* WPA2 allows 63; 32 still fits on the LCD info page */
 
 /* Picks between English and Estonian at runtime */
 #define T(en, et) (s_lang == LANG_ET ? (et) : (en))
+
+/* Always-ON/OFF limit range in EUR/MWh (= 0.1 c/kWh): -100 .. 1000 c/kWh */
+#define PRICE_LIM_MIN    (-1000)
+#define PRICE_LIM_MAX    10000
 
 #define CRED_LEN         64
 #define STR_LEN          64
@@ -121,6 +135,7 @@ static char s_mqtt_host[STR_LEN]        = "";
 static int  s_mqtt_port                 = 1883;
 static char s_mqtt_topic_price[STR_LEN] = "elerelay/price";
 static char s_mqtt_topic_relay[STR_LEN] = "elerelay/relay";
+static char s_dev_pass[DEV_PASS_MAX + 1] = "";
 
 /* ── Types ───────────────────────────────────────────────────────────────── */
 
@@ -157,7 +172,7 @@ typedef enum {
 } relay_rsn_t;
 static relay_rsn_t s_relay_reason = RELAY_RSN_NO_DATA;
 static char              s_ip[20]     = "?.?.?.?";
-static bool              s_ap_mode    = false;
+static bool              s_ap_mode    = false;   /* forward-declared above */
 static char              s_wifi_ssid[CRED_LEN] = {0};
 
 static int  s_ip_mode    = 0;                  /* 0 = DHCP, 1 = static */
@@ -166,10 +181,23 @@ static char s_static_mask[IP_STR_LEN] = "255.255.255.0";
 static char s_static_gw[IP_STR_LEN]   = "";
 static char s_static_dns[IP_STR_LEN]  = "";
 
-static char *s_http_buf = NULL;
-static int   s_http_len = 0;
+/* Serializes fetch_prices() — it can be triggered from both the controller
+ * task and the /fetch web handler. */
+static SemaphoreHandle_t s_fetch_mutex;
 
+typedef struct {
+    char *buf;
+    int   len;
+} http_buf_t;
+
+/* Guards s_mqtt_client against being destroyed (mqtt_start from the web
+ * handler) while another task is publishing through it. */
+static SemaphoreHandle_t s_mqtt_mutex;
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
+
+/* Guards s_screen together with whatever is drawn for it, so the main screen
+ * and the touch config screen can never overwrite each other. */
+static SemaphoreHandle_t s_screen_mutex;
 
 /* ── Touch / screen state ────────────────────────────────────────────────── */
 typedef enum { SCREEN_MAIN, SCREEN_CONFIG } screen_t;
@@ -252,7 +280,40 @@ static void nvs_load_settings(void)
     len = IP_STR_LEN; nvs_get_str(h, NVS_KEY_IP_GW,   s_static_gw,   &len);
     len = IP_STR_LEN; nvs_get_str(h, NVS_KEY_IP_DNS,  s_static_dns,  &len);
 
+    len = sizeof(s_dev_pass); nvs_get_str(h, NVS_KEY_DEV_PASS, s_dev_pass, &len);
+
     nvs_close(h);
+}
+
+static esp_err_t nvs_save_dev_pass(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, NVS_KEY_DEV_PASS, s_dev_pass);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+/* First boot: create a random device password. Must run before WiFi is
+ * started — the bootloader entropy source is used because the RF-based
+ * RNG is not active yet. Ambiguous characters (0/O, 1/l/I) are left out
+ * so the password is easy to copy from the LCD. */
+static void dev_pass_init(void)
+{
+    if (s_dev_pass[0]) return;
+    static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
+    uint8_t rnd[10];
+    bootloader_random_enable();
+    esp_fill_random(rnd, sizeof(rnd));
+    bootloader_random_disable();
+    for (int i = 0; i < 10; i++)
+        s_dev_pass[i] = alphabet[rnd[i] % (sizeof(alphabet) - 1)];
+    s_dev_pass[10] = '\0';
+    if (nvs_save_dev_pass() != ESP_OK)
+        ESP_LOGE(TAG, "Failed to store generated device password");
+    ESP_LOGI(TAG, "Generated device password (see LCD info page)");
 }
 
 static esp_err_t nvs_save_settings(void)
@@ -335,6 +396,7 @@ static void html_escape(const char *in, char *out, size_t outlen)
         else if (*in == '>') { memcpy(out+i, "&gt;",   4); i += 4; }
         else if (*in == '&') { memcpy(out+i, "&amp;",  5); i += 5; }
         else if (*in == '"') { memcpy(out+i, "&quot;", 6); i += 6; }
+        else if (*in == '\'') { memcpy(out+i, "&#39;",  5); i += 5; }
         else                 { out[i++] = *in; }
         in++;
     }
@@ -343,6 +405,85 @@ static void html_escape(const char *in, char *out, size_t outlen)
 
 /* clamp an int to [lo, hi] */
 static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+/* ── Web access control ──────────────────────────────────────────────────── */
+
+static bool s_ap_mode;   /* defined with the other globals below */
+
+/* Constant-time compare so the password can't be guessed byte by byte */
+static bool ct_equal(const char *a, const char *b, size_t n)
+{
+    unsigned char d = 0;
+    for (size_t i = 0; i < n; i++) d |= (unsigned char)(a[i] ^ b[i]);
+    return d == 0;
+}
+
+/* HTTP Basic auth (user AUTH_USER, password s_dev_pass). Sends 401 and
+ * returns false when the request is not authorized. In AP mode the setup
+ * network itself is WPA2-protected with the same password, so no login. */
+static bool auth_ok(httpd_req_t *req)
+{
+    if (s_ap_mode) return true;
+
+    bool had_hdr = false;
+    char hdr[160];
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK &&
+        strncmp(hdr, "Basic ", 6) == 0) {
+        had_hdr = true;
+        unsigned char dec[96];
+        size_t olen = 0;
+        if (mbedtls_base64_decode(dec, sizeof(dec) - 1, &olen,
+                                  (const unsigned char *)hdr + 6, strlen(hdr + 6)) == 0) {
+            char expect[sizeof(AUTH_USER) + DEV_PASS_MAX + 1];
+            snprintf(expect, sizeof(expect), "%s:%s", AUTH_USER, s_dev_pass);
+            if (olen == strlen(expect) && ct_equal((const char *)dec, expect, olen))
+                return true;
+        }
+    }
+    if (had_hdr) {
+        ESP_LOGW(TAG, "Web login failed");
+        vTaskDelay(pdMS_TO_TICKS(1000));   /* slow down password guessing */
+    }
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"EleRelay\", charset=\"UTF-8\"");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Authentication required");
+    return false;
+}
+
+/* CSRF protection for POST handlers. Browsers resend Basic-auth credentials
+ * automatically, so a form on another website could otherwise post here.
+ * Browsers always send Origin (or at least Referer) on such requests; it
+ * must point at this device's Host. Requests with neither header (curl,
+ * scripts) are allowed — they still need the password. */
+static bool origin_ok(httpd_req_t *req)
+{
+    const char *name = NULL;
+    if (httpd_req_get_hdr_value_len(req, "Origin") > 0)       name = "Origin";
+    else if (httpd_req_get_hdr_value_len(req, "Referer") > 0) name = "Referer";
+    if (!name) return true;
+
+    char host[64] = "", src[256] = "";
+    bool ok = httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK &&
+              host[0] &&
+              httpd_req_get_hdr_value_str(req, name, src, sizeof(src)) == ESP_OK;
+    if (ok) {
+        /* src = scheme://host[:port][/path...] */
+        const char *p = strstr(src, "://");
+        p = p ? p + 3 : src;
+        size_t hl = strlen(host);
+        ok = strncmp(p, host, hl) == 0 && (p[hl] == '\0' || p[hl] == '/');
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "Rejected cross-site POST (%s: %s, Host: %s)", name, src, host);
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request rejected");
+    }
+    return ok;
+}
+
+/* Guards for handlers: GET pages need login; POSTs need login + same origin */
+#define REQUIRE_AUTH(req)       do { if (!auth_ok(req)) return ESP_OK; } while (0)
+#define REQUIRE_AUTH_POST(req)  do { if (!origin_ok(req) || !auth_ok(req)) return ESP_FAIL; } while (0)
 
 /* ── WiFi ────────────────────────────────────────────────────────────────── */
 
@@ -432,13 +573,14 @@ static void wifi_start_ap(void)
     strlcpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid));
     ap_cfg.ap.ssid_len = strlen(AP_SSID);
     ap_cfg.ap.channel  = 6;
-    ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+    strlcpy((char *)ap_cfg.ap.password, s_dev_pass, sizeof(ap_cfg.ap.password));
+    ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
     ap_cfg.ap.max_connection = 4;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
     snprintf(s_ip, sizeof(s_ip), "192.168.4.1");
-    ESP_LOGI(TAG, "AP started — SSID: %s  IP: 192.168.4.1", AP_SSID);
+    ESP_LOGI(TAG, "AP started — SSID: %s (WPA2, password on LCD)  IP: 192.168.4.1", AP_SSID);
 }
 
 /* ── NTP ─────────────────────────────────────────────────────────────────── */
@@ -474,13 +616,17 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
 
 static void mqtt_start(void)
 {
+    xSemaphoreTake(s_mqtt_mutex, portMAX_DELAY);
     /* Tear down any existing client */
     if (s_mqtt_client) {
         esp_mqtt_client_stop(s_mqtt_client);
         esp_mqtt_client_destroy(s_mqtt_client);
         s_mqtt_client = NULL;
     }
-    if (!s_mqtt_enabled || s_mqtt_host[0] == '\0') return;
+    if (!s_mqtt_enabled || s_mqtt_host[0] == '\0') {
+        xSemaphoreGive(s_mqtt_mutex);
+        return;
+    }
 
     char uri[96];
     snprintf(uri, sizeof(uri), "mqtt://%s:%d", s_mqtt_host, s_mqtt_port);
@@ -491,26 +637,32 @@ static void mqtt_start(void)
     esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID,
                                    mqtt_event_handler, NULL);
     esp_mqtt_client_start(s_mqtt_client);
+    xSemaphoreGive(s_mqtt_mutex);
     ESP_LOGI(TAG, "MQTT → %s", uri);
 }
 
 static void mqtt_publish(const char *topic, const char *payload)
 {
-    if (!s_mqtt_client || !s_mqtt_enabled || !topic || topic[0] == '\0') return;
-    esp_mqtt_client_publish(s_mqtt_client, topic, payload, 0, /*qos*/0, /*retain*/1);
+    if (!topic || topic[0] == '\0') return;
+    xSemaphoreTake(s_mqtt_mutex, portMAX_DELAY);
+    if (s_mqtt_client && s_mqtt_enabled)
+        esp_mqtt_client_publish(s_mqtt_client, topic, payload, 0, /*qos*/0, /*retain*/1);
+    xSemaphoreGive(s_mqtt_mutex);
 }
 
 /* ── Elering API ─────────────────────────────────────────────────────────── */
 
 static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 {
+    http_buf_t *hb = (http_buf_t *)evt->user_data;
+    if (!hb || !hb->buf) return ESP_OK;
     if (evt->event_id == HTTP_EVENT_ON_DATA) {
-        if (s_http_buf && s_http_len + evt->data_len < HTTP_BUF_SIZE - 1) {
-            memcpy(s_http_buf + s_http_len, evt->data, evt->data_len);
-            s_http_len += evt->data_len;
+        if (hb->len + evt->data_len < HTTP_BUF_SIZE - 1) {
+            memcpy(hb->buf + hb->len, evt->data, evt->data_len);
+            hb->len += evt->data_len;
         }
     } else if (evt->event_id == HTTP_EVENT_ON_FINISH) {
-        if (s_http_buf) s_http_buf[s_http_len] = '\0';
+        hb->buf[hb->len] = '\0';
     }
     return ESP_OK;
 }
@@ -529,14 +681,18 @@ static int cmp_price_asc(const void *a, const void *b)
  * Without min_run: picks the cheapest cheap_n individual 15-min slots.
  * With min_run:    picks contiguous blocks of blk=ceil(min_run/15) slots so the
  *                  relay never activates for less than min_run minutes.
- *                  Number of blocks = max(1, cheap_n / blk). */
+ *                  Number of blocks = max(1, cheap_n / blk).
+ *
+ * A window shorter than hours_window (normally the last one, before the next
+ * day's prices are published) gets a proportional share of cheap slots.
+ * Otherwise cheap_n >= window length would mark the whole remainder cheap. */
 static void mark_cheap_hours(hour_slot_t *slots, int count, int min_run_minutes)
 {
     if (count == 0) return;
     for (int i = 0; i < count; i++) slots[i].cheap = false;
 
-    int    cheap_n   = s_cheap_hours * 4;
-    int    win_secs  = (s_hours_window > 0 ? s_hours_window : 1) * 3600;
+    int    win_slots = (s_hours_window > 0 ? s_hours_window : 1) * 4;
+    int    win_secs  = win_slots * 900;
     int    blk       = (min_run_minutes > 15) ? (min_run_minutes + 14) / 15 : 0;
     time_t base      = slots[0].ts;
 
@@ -547,6 +703,12 @@ static void mark_cheap_hours(hour_slot_t *slots, int count, int min_run_minutes)
         int j  = i;
         while (j < count && (int)((slots[j].ts - base) / win_secs) == wn) j++;
         int wlen = j - i;
+
+        /* Cheap slots for this window, scaled for a partial window (rounded) */
+        int cheap_n = s_cheap_hours * 4;
+        if (wlen < win_slots)
+            cheap_n = (cheap_n * wlen + win_slots / 2) / win_slots;
+        if (cheap_n == 0) { i = j; continue; }
 
         if (blk > 1 && blk <= wlen) {
             /* Block mode: greedily pick cheapest non-overlapping runs of blk slots */
@@ -609,7 +771,17 @@ static bool inet_check(void)
     return err == ESP_OK && status >= 200 && status < 400;
 }
 
+static esp_err_t fetch_prices_locked(void);
+
 static esp_err_t fetch_prices(void)
+{
+    xSemaphoreTake(s_fetch_mutex, portMAX_DELAY);
+    esp_err_t err = fetch_prices_locked();
+    xSemaphoreGive(s_fetch_mutex);
+    return err;
+}
+
+static esp_err_t fetch_prices_locked(void)
 {
     time_t now; time(&now);
     time_t win_start = (now / 3600) * 3600;
@@ -629,13 +801,13 @@ static esp_err_t fetch_prices(void)
         te.tm_year+1900, te.tm_mon+1, te.tm_mday, te.tm_hour);
     ESP_LOGI(TAG, "GET %s", url);
 
-    s_http_buf = calloc(1, HTTP_BUF_SIZE);
-    if (!s_http_buf) return ESP_ERR_NO_MEM;
-    s_http_len = 0;
+    http_buf_t hb = { .buf = calloc(1, HTTP_BUF_SIZE), .len = 0 };
+    if (!hb.buf) return ESP_ERR_NO_MEM;
 
     esp_http_client_config_t cfg = {
         .url               = url,
         .event_handler     = http_event_cb,
+        .user_data         = &hb,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 20000,
     };
@@ -646,12 +818,13 @@ static esp_err_t fetch_prices(void)
 
     if (err != ESP_OK || status != 200) {
         ESP_LOGE(TAG, "HTTP %s / %d", esp_err_to_name(err), status);
-        free(s_http_buf); s_http_buf = NULL;
+        free(hb.buf);
         return ESP_FAIL;
     }
 
-    cJSON *root = cJSON_Parse(s_http_buf);
-    free(s_http_buf); s_http_buf = NULL;
+    hb.buf[hb.len] = '\0';
+    cJSON *root = cJSON_Parse(hb.buf);
+    free(hb.buf);
     if (!root) { ESP_LOGE(TAG, "JSON parse failed"); return ESP_FAIL; }
 
     cJSON *ee = cJSON_GetObjectItem(cJSON_GetObjectItem(root, "data"), "ee");
@@ -882,6 +1055,7 @@ static void send_page_head(httpd_req_t *req, const char *title)
 
 static esp_err_t relay_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     send_page_head(req, T("EleRelay \xe2\x80\x94 Relay Settings", "EleRelay \xe2\x80\x94 Relee Seaded"));
     char chunk[512];
     snprintf(chunk, sizeof(chunk), "<h1>&#x1F4CA; %s</h1>"
@@ -1025,6 +1199,7 @@ static esp_err_t relay_get_handler(httpd_req_t *req)
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
     char chunk[512];
     snprintf(chunk, sizeof(chunk), "<h1>&#x2699;&#xFE0F; %s</h1>"
@@ -1084,6 +1259,29 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req, buf);
     }
 
+    /* ── Device password ── */
+    snprintf(chunk, sizeof(chunk), "<h2>%s</h2>", T("Password", "Parool"));
+    httpd_resp_sendstr_chunk(req, chunk);
+    {
+        char buf[768];
+        snprintf(buf, sizeof(buf),
+            "<label>%s"
+            "<input type='password' name='dev_pass' minlength='%d' maxlength='%d'"
+            " autocomplete='new-password' placeholder='%s'>"
+            "</label>"
+            "<p class='note'>%s</p>",
+            T("New device password", "Uus seadme parool"),
+            DEV_PASS_MIN, DEV_PASS_MAX,
+            T("Leave blank to keep the current password", "J&auml;ta t&uuml;hjaks, et parool s&auml;iliks"),
+            T("Web login user is <b>" AUTH_USER "</b>. The same password protects the"
+              " <code>" AP_SSID "</code> setup WiFi. 8&ndash;32 characters."
+              " The current password is shown on the LCD info page (tap screen, page 4/4).",
+              "Veebi kasutajanimi on <b>" AUTH_USER "</b>. Sama parool kaitseb"
+              " <code>" AP_SSID "</code> seadistusv&otilde;rku. 8&ndash;32 m&auml;rki."
+              " Praegune parool on n&auml;ha LCD infolehel (puuduta ekraani, leht 4/4)."));
+        httpd_resp_sendstr_chunk(req, buf);
+    }
+
     /* ── Language / Keel ── */
     httpd_resp_sendstr_chunk(req, "<h2>Keel / Language</h2>");
     snprintf(chunk, sizeof(chunk),
@@ -1109,6 +1307,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
 
 static esp_err_t relay_post_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH_POST(req);
     char body[1024] = {0};
     int len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
@@ -1134,14 +1333,12 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
     bool aon_en = (strstr(body, "aon_en=on") || strstr(body, "aon_en=1"));
     form_field(body, "aon_lim", val, sizeof(val));
     for (char *p = val; *p; p++) if (*p == ',') *p = '.';  /* locale-safe */
-    int aon_lim = (int)(atof(val) * 10.0f);
-    aon_lim = aon_lim < -1000 ? -1000 : aon_lim > 10000 ? 10000 : aon_lim;
+    int aon_lim = clamp((int)lroundf(atof(val) * 10.0f), PRICE_LIM_MIN, PRICE_LIM_MAX);
 
     bool aoff_en = (strstr(body, "aoff_en=on") || strstr(body, "aoff_en=1"));
     form_field(body, "aoff_lim", val, sizeof(val));
     for (char *p = val; *p; p++) if (*p == ',') *p = '.';  /* locale-safe */
-    int aoff_lim = (int)(atof(val) * 10.0f);
-    aoff_lim = aoff_lim < -1000 ? -1000 : aoff_lim > 10000 ? 10000 : aoff_lim;
+    int aoff_lim = clamp((int)lroundf(atof(val) * 10.0f), PRICE_LIM_MIN, PRICE_LIM_MAX);
 
     /* Apply immediately */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -1205,7 +1402,8 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
 {
-    char body[512] = {0};
+    REQUIRE_AUTH_POST(req);
+    char body[1024] = {0};
     int len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
     body[len] = '\0';
@@ -1227,13 +1425,34 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     form_field(body, "inet_chk", val, sizeof(val));
     int inet_chk = clamp(atoi(val), 0, 60);
 
+    /* Optional new device password (blank = keep): 8-32 printable ASCII
+     * characters (WPA2-compatible, short enough to show on the LCD). */
+    char dev_pass[DEV_PASS_MAX + 2] = {0};
+    form_field(body, "dev_pass", dev_pass, sizeof(dev_pass));
+    size_t dp_len = strlen(dev_pass);
+    if (dp_len > 0) {
+        bool valid = dp_len >= DEV_PASS_MIN && dp_len <= DEV_PASS_MAX;
+        for (size_t k = 0; valid && k < dp_len; k++)
+            if (dev_pass[k] < 0x20 || dev_pass[k] > 0x7E) valid = false;
+        if (!valid) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Password must be 8-32 printable ASCII characters");
+            return ESP_FAIL;
+        }
+    }
+
     /* Apply immediately */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     strlcpy(s_ntp_server,       ntp_server,  sizeof(s_ntp_server));
     strlcpy(s_tz_str,           tz_str,      sizeof(s_tz_str));
     s_lang = new_lang;
     s_inet_check_min = inet_chk;
+    if (dp_len > 0) strlcpy(s_dev_pass, dev_pass, sizeof(s_dev_pass));
     xSemaphoreGive(s_mutex);
+    if (dp_len > 0) {
+        nvs_save_dev_pass();
+        ESP_LOGI(TAG, "Device password changed");
+    }
     display_set_lang(new_lang);
 
     /* Apply timezone immediately */
@@ -1247,20 +1466,26 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
              ntp_server, tz_str, new_lang, inet_chk);
 
     send_page_head(req, T("EleRelay \xe2\x80\x94 Settings", "EleRelay \xe2\x80\x94 Seaded"));
-    char chunk[768];
+    char safe_ntp[STR_LEN * 6], safe_tz[STR_LEN * 6];
+    html_escape(ntp_server, safe_ntp, sizeof(safe_ntp));
+    html_escape(tz_str,     safe_tz,  sizeof(safe_tz));
+    char chunk[1280];
     snprintf(chunk, sizeof(chunk),
         "<h1>%s</h1>"
         "<p>&#x2714; %s</p>"
         "<ul style='font-size:.9rem;line-height:1.8'>"
         "<li>NTP: <b>%s</b></li>"
         "<li>TZ: <b>%s</b></li>"
+        "%s"
         "</ul>"
         "<p><a href='/settings'>%s</a>"
         " &nbsp; <a href='/'>%s</a></p>"
         "</body></html>",
         T("Settings", "Seaded"),
         T("Saved &amp; applied.", "Salvestatud &amp; rakendatud."),
-        ntp_server, tz_str,
+        safe_ntp, safe_tz,
+        dp_len > 0 ? T("<li><b>Password changed</b> &mdash; log in again with the new password.</li>",
+                       "<li><b>Parool muudetud</b> &mdash; logi uue parooliga uuesti sisse.</li>") : "",
         T("Back to settings", "Tagasi seadetesse"),
         T("Price table", "Hinnad"));
     httpd_resp_sendstr_chunk(req, chunk);
@@ -1272,6 +1497,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
 static esp_err_t mqtt_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     send_page_head(req, "EleRelay \xe2\x80\x94 MQTT");
     char chunk[512];
     snprintf(chunk, sizeof(chunk), "<h1>&#x1F4E1; MQTT</h1>"
@@ -1361,6 +1587,7 @@ static esp_err_t mqtt_get_handler(httpd_req_t *req)
 
 static esp_err_t mqtt_post_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH_POST(req);
     char body[640] = {0};
     int len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
@@ -1425,7 +1652,9 @@ static esp_err_t mqtt_post_handler(httpd_req_t *req)
 static void send_wifi_form(httpd_req_t *req, bool is_ap)
 {
     send_page_head(req, T("EleRelay \xe2\x80\x94 Network", "EleRelay \xe2\x80\x94 V&otilde;rk"));
-    char buf[1024];
+    char safe_ssid[CRED_LEN * 6] = {0};
+    html_escape(s_wifi_ssid, safe_ssid, sizeof(safe_ssid));
+    char buf[1280];
     snprintf(buf, sizeof(buf),
         "<h1>&#x1F4F6; %s</h1>%s"
         "<form method='POST' action='/wifi'>"
@@ -1442,10 +1671,11 @@ static void send_wifi_form(httpd_req_t *req, bool is_ap)
         is_ap ? T("<p>Connect this device to your WiFi network.</p>",
                   "<p>&#xDC;hendage seade WiFi v&otilde;rguga.</p>") : "",
         T("Network (SSID)", "V&otilde;rk (SSID)"),
-        s_wifi_ssid,
+        safe_ssid,
         T("Network name", "V&otilde;rgu nimi"),
         T("Password", "Parool"),
-        T("Leave blank for open network", "J&auml;ta t&uuml;hjaks avatud v&otilde;rgu puhul"),
+        T("Leave blank to keep the current password (same SSID) or for an open network",
+          "J&auml;ta t&uuml;hjaks, et s&auml;ilitada praegune parool (sama SSID) v&otilde;i avatud v&otilde;rgu puhul"),
         T("IP Configuration", "IP seadistus"),
         s_ip_mode == 0 ? " checked" : "",
         T("DHCP (automatic)", "DHCP (automaatne)"),
@@ -1453,16 +1683,23 @@ static void send_wifi_form(httpd_req_t *req, bool is_ap)
         T("Static IP", "Staatiline IP"));
     httpd_resp_sendstr_chunk(req, buf);
 
+    httpd_resp_sendstr_chunk(req, "<div id='ipfields'>");
+    const struct { const char *label, *name, *value, *placeholder; } ipf[] = {
+        { T("IP Address", "IP aadress"),               "ip_addr", s_static_ip,   "192.168.1.50"  },
+        { T("Subnet Mask", "Alamv&otilde;rgu mask"),   "ip_mask", s_static_mask, "255.255.255.0" },
+        { T("Gateway", "L&uuml;&uuml;s"),              "ip_gw",   s_static_gw,   "192.168.1.1"   },
+        { T("DNS", "DNS"),                             "ip_dns",  s_static_dns,  "192.168.1.1"   },
+    };
+    for (size_t k = 0; k < sizeof(ipf) / sizeof(ipf[0]); k++) {
+        char safe[IP_STR_LEN * 6];
+        html_escape(ipf[k].value, safe, sizeof(safe));
+        snprintf(buf, sizeof(buf),
+            "<label>%s<input type='text' name='%s' maxlength='15' value='%s'"
+            " placeholder='%s'></label>",
+            ipf[k].label, ipf[k].name, safe, ipf[k].placeholder);
+        httpd_resp_sendstr_chunk(req, buf);
+    }
     snprintf(buf, sizeof(buf),
-        "<div id='ipfields'>"
-        "<label>%s<input type='text' name='ip_addr' maxlength='15' value='%s'"
-        " placeholder='192.168.1.50'></label>"
-        "<label>%s<input type='text' name='ip_mask' maxlength='15' value='%s'"
-        " placeholder='255.255.255.0'></label>"
-        "<label>%s<input type='text' name='ip_gw' maxlength='15' value='%s'"
-        " placeholder='192.168.1.1'></label>"
-        "<label>%s<input type='text' name='ip_dns' maxlength='15' value='%s'"
-        " placeholder='192.168.1.1'></label>"
         "</div>"
         "<script>function elIpToggle(){"
         "document.getElementById('ipfields').style.display="
@@ -1471,10 +1708,6 @@ static void send_wifi_form(httpd_req_t *req, bool is_ap)
         "<button type='submit'>%s</button>"
         "</form>"
         "<p class='note'>%s</p>",
-        T("IP Address", "IP aadress"), s_static_ip,
-        T("Subnet Mask", "Alamv&otilde;rgu mask"), s_static_mask,
-        T("Gateway", "L&uuml;&uuml;s"), s_static_gw,
-        T("DNS", "DNS"), s_static_dns,
         T("Save &amp; Restart", "Salvesta &amp; Taask&auml;ivita"),
         T("Device restarts and tries to connect. Returns to AP setup mode if it fails.",
           "Seade taask&auml;ivitub ja proovib &uuml;henduda. Kui ei &otilde;nnestu, l&auml;heb AP-re&zcaron;iimi."));
@@ -1491,6 +1724,7 @@ static void send_wifi_form(httpd_req_t *req, bool is_ap)
 
 static esp_err_t wifi_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     send_wifi_form(req, s_ap_mode);
     return ESP_OK;
 }
@@ -1499,6 +1733,7 @@ static esp_err_t wifi_get_handler(httpd_req_t *req)
 
 static esp_err_t wifi_post_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH_POST(req);
     char body[768] = {0};
     int  len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty"); return ESP_FAIL; }
@@ -1511,6 +1746,15 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
     if (ssid[0] == '\0') {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required");
         return ESP_FAIL;
+    }
+
+    /* The form never pre-fills the password. A blank password for the
+     * currently stored SSID means "keep it", so changing only the IP
+     * settings does not wipe the password. */
+    if (pass[0] == '\0') {
+        char old_ssid[CRED_LEN] = {0}, old_pass[CRED_LEN] = {0};
+        if (nvs_load_creds(old_ssid, old_pass) == ESP_OK && strcmp(old_ssid, ssid) == 0)
+            strlcpy(pass, old_pass, sizeof(pass));
     }
 
     char ip_mode[8] = {0};
@@ -1526,6 +1770,14 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
     ip4_addr_t addr;
     if (want_static && (!ip4addr_aton(ip_addr, &addr) || !ip4addr_aton(ip_mask, &addr))) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid static IP configuration");
+        return ESP_FAIL;
+    }
+    if (ip_addr[0] && !ip4addr_aton(ip_addr, &addr)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid IP address");
+        return ESP_FAIL;
+    }
+    if (ip_mask[0] && !ip4addr_aton(ip_mask, &addr)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid subnet mask");
         return ESP_FAIL;
     }
     if (ip_gw[0]  && !ip4addr_aton(ip_gw, &addr)) {
@@ -1683,7 +1935,7 @@ static esp_err_t web_get_handler(httpd_req_t *req)
             T("Relay", "Relee"));
         httpd_resp_sendstr_chunk(req, chunk);
 
-        time_t cur_hour = (now / 3600) * 3600;
+        time_t cur_slot = (now / 900) * 900;
         time_t win_base = local[0].ts;
         int    win_secs = (win_hours > 0 ? win_hours : 1) * 3600;
         for (int i = start; i < start + show; i++) {
@@ -1703,7 +1955,7 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 
             struct tm th; localtime_r(&local[i].ts, &th);
             char hr[20]; strftime(hr, sizeof(hr), "%Y-%m-%d %H:%M", &th);
-            bool is_cur = (local[i].ts == cur_hour);
+            bool is_cur = (local[i].ts == cur_slot);
             bool ron    = eff_on[i];   /* effective relay state (min-run aware) */
             float cprice  = local[i].price / 10.0f;
             int this_h = (int)(local[i].ts / 3600);
@@ -1736,6 +1988,7 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 
 static esp_err_t ota_get_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH(req);
     send_page_head(req, "EleRelay \xe2\x80\x94 OTA Update");
     httpd_resp_sendstr_chunk(req, "<h1>&#x1F4E6; OTA Firmware Update</h1>");
 
@@ -1818,6 +2071,7 @@ static esp_err_t ota_get_handler(httpd_req_t *req)
 
 static esp_err_t ota_post_handler(httpd_req_t *req)
 {
+    REQUIRE_AUTH_POST(req);
     const esp_partition_t *update = esp_ota_get_next_update_partition(NULL);
     if (!update) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition found");
@@ -1892,6 +2146,8 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
 
 static esp_err_t fetch_post_handler(httpd_req_t *req)
 {
+    /* Public price-table button: no login, but no cross-site triggering */
+    if (!origin_ok(req)) return ESP_FAIL;
     fetch_prices();
     update_relay();
     update_display();
@@ -1988,7 +2244,7 @@ static void compute_effective_relay_states(
 
 static void update_display(void)
 {
-    if (s_screen == SCREEN_CONFIG) return;  /* don't overwrite config page */
+    if (s_screen == SCREEN_CONFIG) return;  /* cheap early-out; re-checked below */
     time_t now; time(&now);
     time_t cur_slot = (now / 900) * 900;
 
@@ -2007,11 +2263,12 @@ static void update_display(void)
     memcpy(local, s_hours, count * sizeof(hour_slot_t));
     xSemaphoreGive(s_mutex);
 
-    /* Find index of current slot */
+    /* First slot that has not ended yet. If it is the slot covering "now",
+     * it is the current slot; otherwise there is no price for now (stale
+     * data or a gap) and nothing must be shown as current. */
     int cur_idx = 0;
-    for (int i = 0; i < count; i++) {
-        if (local[i].ts == cur_slot) { cur_idx = i; break; }
-    }
+    while (cur_idx < count && local[cur_idx].ts + 900 <= now) cur_idx++;
+    int disp_cur = (cur_idx < count && local[cur_idx].ts == cur_slot) ? 0 : -1;
 
     /* Compute effective relay state from cur_idx using actual relay state.
      * Past slots (before cur_idx) are not shown — fill with price-only. */
@@ -2034,10 +2291,18 @@ static void update_display(void)
         dslots[dcount].is_on         = eff_on[i];
     }
 
-    int win_offset = (s_hours_window > 0) ? cur_idx % (s_hours_window * 4) : 0;
-    display_update(relay_on, ap_mode, s_wifi_ssid, s_inet_ok,
-                   now, dslots, dcount, 0,
-                   s_cheap_hours, s_hours_window, win_offset);
+    /* Offset of the first shown bar inside its hours-window (windows are
+     * anchored at local[0].ts, see mark_cheap_hours) */
+    int win_offset = 0;
+    if (s_hours_window > 0 && cur_idx < count)
+        win_offset = (int)((local[cur_idx].ts - local[0].ts) / 900) % (s_hours_window * 4);
+
+    xSemaphoreTake(s_screen_mutex, portMAX_DELAY);
+    if (s_screen == SCREEN_MAIN)
+        display_update(relay_on, ap_mode, s_wifi_ssid, s_inet_ok,
+                       now, dslots, dcount, disp_cur,
+                       s_cheap_hours, s_hours_window, win_offset);
+    xSemaphoreGive(s_screen_mutex);
 }
 
 /* ── Sysinfo helper for config page 3 ────────────────────────────────────── */
@@ -2049,6 +2314,7 @@ static void build_sysinfo(disp_sysinfo_t *out)
     out->build_date = d->date;
     out->build_time = d->time;
     out->ssid = s_ap_mode ? NULL : s_wifi_ssid;
+    out->web_pass = s_dev_pass;
     out->ip   = s_ip;
 
     uint8_t mac[6];
@@ -2095,7 +2361,9 @@ static void touch_task(void *arg)
         /* Auto-close config screen after 60 s of inactivity */
         if (s_screen == SCREEN_CONFIG &&
             (xTaskGetTickCount() - cfg_entered_at) > pdMS_TO_TICKS(60000)) {
+            xSemaphoreTake(s_screen_mutex, portMAX_DELAY);
             s_screen = SCREEN_MAIN;
+            xSemaphoreGive(s_screen_mutex);
             update_display();
             was_touched = false;
             continue;
@@ -2117,15 +2385,17 @@ static void touch_task(void *arg)
             s_cfg_bl_pct   = s_backlight_pct;
             xSemaphoreGive(s_mutex);
             s_cfg_page = 0;
-            s_screen = SCREEN_CONFIG;
             cfg_entered_at = xTaskGetTickCount();
             {
                 disp_sysinfo_t _si;
                 build_sysinfo(&_si);
+                xSemaphoreTake(s_screen_mutex, portMAX_DELAY);
+                s_screen = SCREEN_CONFIG;
                 display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run,
                                     s_cfg_aon_en, s_cfg_aon_lim,
                                     s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page,
                                     s_cfg_bl_pct, &_si);
+                xSemaphoreGive(s_screen_mutex);
             }
         } else {
             cfg_entered_at = xTaskGetTickCount();  /* any touch resets the timer */
@@ -2133,14 +2403,19 @@ static void touch_task(void *arg)
 #define REDRAW() do { \
     disp_sysinfo_t _ri; \
     build_sysinfo(&_ri); \
-    display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run, \
-                        s_cfg_aon_en, s_cfg_aon_lim, \
-                        s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, \
-                        s_cfg_bl_pct, &_ri); \
+    xSemaphoreTake(s_screen_mutex, portMAX_DELAY); \
+    if (s_screen == SCREEN_CONFIG) \
+        display_show_config(s_cfg_cheap, s_cfg_window, s_cfg_min_run, \
+                            s_cfg_aon_en, s_cfg_aon_lim, \
+                            s_cfg_aoff_en, s_cfg_aoff_lim, s_cfg_page, \
+                            s_cfg_bl_pct, &_ri); \
+    xSemaphoreGive(s_screen_mutex); \
 } while(0)
             switch (btn) {
             case DISP_CFG_CLOSE:
+                xSemaphoreTake(s_screen_mutex, portMAX_DELAY);
                 s_screen = SCREEN_MAIN;
+                xSemaphoreGive(s_screen_mutex);
                 update_display();
                 break;
             case DISP_CFG_NEXT_PAGE:
@@ -2185,19 +2460,19 @@ static void touch_task(void *arg)
                 REDRAW();
                 break;
             case DISP_CFG_AON_DEC:
-                if (s_cfg_aon_lim >= 10) s_cfg_aon_lim -= 10;
+                s_cfg_aon_lim = clamp(s_cfg_aon_lim - 10, PRICE_LIM_MIN, PRICE_LIM_MAX);
                 REDRAW();
                 break;
             case DISP_CFG_AON_INC:
-                if (s_cfg_aon_lim <= 1990) s_cfg_aon_lim += 10;
+                s_cfg_aon_lim = clamp(s_cfg_aon_lim + 10, PRICE_LIM_MIN, PRICE_LIM_MAX);
                 REDRAW();
                 break;
             case DISP_CFG_AOFF_DEC:
-                if (s_cfg_aoff_lim >= 10) s_cfg_aoff_lim -= 10;
+                s_cfg_aoff_lim = clamp(s_cfg_aoff_lim - 10, PRICE_LIM_MIN, PRICE_LIM_MAX);
                 REDRAW();
                 break;
             case DISP_CFG_AOFF_INC:
-                if (s_cfg_aoff_lim <= 1990) s_cfg_aoff_lim += 10;
+                s_cfg_aoff_lim = clamp(s_cfg_aoff_lim + 10, PRICE_LIM_MIN, PRICE_LIM_MAX);
                 REDRAW();
                 break;
             case DISP_CFG_BL_DEC:
@@ -2227,7 +2502,9 @@ static void touch_task(void *arg)
                 display_set_backlight(s_backlight_pct);
                 nvs_save_settings();
                 update_relay();
+                xSemaphoreTake(s_screen_mutex, portMAX_DELAY);
                 s_screen = SCREEN_MAIN;
+                xSemaphoreGive(s_screen_mutex);
                 update_display();
                 break;
             default: break;
@@ -2264,17 +2541,17 @@ static void offline_blink_task(void *arg)
     bool visible = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(167));
+        xSemaphoreTake(s_screen_mutex, portMAX_DELAY);
         if (s_screen != SCREEN_MAIN) {
             visible = false;   /* config page covers icon area; nothing to clear */
-            continue;
-        }
-        if (!s_ap_mode && !s_inet_ok) {
+        } else if (!s_ap_mode && !s_inet_ok) {
             visible = !visible;
             display_blink_offline(visible);
         } else if (visible) {
             visible = false;
             display_blink_offline(false);
         }
+        xSemaphoreGive(s_screen_mutex);
     }
 }
 
@@ -2290,13 +2567,18 @@ static void controller_task(void *arg)
     update_relay();
     update_display();
 
+    time_t last_minute = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));    /* tick every second for clock */
         time_t now; time(&now);
 
         update_display();   /* refresh clock every second */
 
-        if (now % 60 != 0) continue;   /* minute-level work below */
+        /* Minute-level work below. Compare minute numbers instead of testing
+         * now % 60 == 0: loop iterations take a bit over 1 s, so an exact
+         * second can be skipped. */
+        if (now / 60 == last_minute) continue;
+        last_minute = now / 60;
 
         struct tm ti; localtime_r(&now, &ti);
 
@@ -2333,6 +2615,25 @@ static void controller_task(void *arg)
 
 void app_main(void)
 {
+    /* Relay + RGB LED GPIOs — drive OFF before anything else. The output
+     * latch is written before the pin becomes an output, so an active-LOW
+     * relay never sees a LOW pulse during boot. */
+    gpio_set_level(RELAY_GPIO,     RELAY_OFF_LEVEL);
+    gpio_set_level(LED_RED_GPIO,   LED_OFF);
+    gpio_set_level(LED_GREEN_GPIO, LED_OFF);
+    gpio_set_level(LED_BLUE_GPIO,  LED_OFF);
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << RELAY_GPIO)
+                      | (1ULL << LED_RED_GPIO)
+                      | (1ULL << LED_GREEN_GPIO)
+                      | (1ULL << LED_BLUE_GPIO),
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io));
+
     ESP_LOGI(TAG, "EleRelay booting (relay GPIO%d)", CONFIG_RELAY_GPIO);
 
     /* Display + touch */
@@ -2349,6 +2650,8 @@ void app_main(void)
 
     /* Load runtime settings (before anything that uses them) */
     nvs_load_settings();
+    dev_pass_init();
+    display_set_ap_password(s_dev_pass);
     display_set_lang(s_lang);
     display_set_backlight(s_backlight_pct);
     ESP_LOGI(TAG, "Settings: window=%d cheap=%d inv=%d fetch_h=%d "
@@ -2356,24 +2659,10 @@ void app_main(void)
              s_hours_window, s_cheap_hours, s_relay_inv, s_fetch_hour,
              s_ntp_server, s_tz_str, s_mqtt_enabled, s_mqtt_host, s_mqtt_port);
 
-    s_mutex = xSemaphoreCreateMutex();
-
-    /* Relay + RGB LED GPIOs — initialise OFF */
-    gpio_config_t io = {
-        .pin_bit_mask = (1ULL << RELAY_GPIO)
-                      | (1ULL << LED_RED_GPIO)
-                      | (1ULL << LED_GREEN_GPIO)
-                      | (1ULL << LED_BLUE_GPIO),
-        .mode         = GPIO_MODE_OUTPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&io));
-    gpio_set_level(RELAY_GPIO,    RELAY_OFF_LEVEL);
-    gpio_set_level(LED_RED_GPIO,  LED_OFF);
-    gpio_set_level(LED_GREEN_GPIO, LED_OFF);
-    gpio_set_level(LED_BLUE_GPIO, LED_OFF);
+    s_mutex       = xSemaphoreCreateMutex();
+    s_fetch_mutex = xSemaphoreCreateMutex();
+    s_mqtt_mutex  = xSemaphoreCreateMutex();
+    s_screen_mutex = xSemaphoreCreateMutex();
 
     /* WiFi common init */
     s_wifi_eg = xEventGroupCreate();

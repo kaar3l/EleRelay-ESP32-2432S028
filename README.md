@@ -13,6 +13,7 @@ An ESP32 firmware for the **ESP-2432S028** ("Cheap Yellow Display") board that f
 - **Touchscreen support** — tap the display to open a 4-page settings screen; adjust window size, cheap hours, minimum run time, always-ON/OFF thresholds, enable/disable price limits, and set backlight brightness directly on the device; auto-closes after 60 s of inactivity
 - **English / Estonian UI** — language selector on the `/settings` page; applies to both the web interface and the LCD
 - Captive-portal style web UI (no app needed) for all settings
+- **Password protection** — settings pages require a login (`admin` + device password); cross-site form posts are rejected; the setup AP is WPA2-protected with the same password
 - All settings stored in NVS — survive reboots
 - **MQTT** publishing of current price and relay state
 - Configurable NTP server and POSIX timezone string
@@ -48,9 +49,16 @@ Connect your relay module's IN pin to the chosen GPIO (default GPIO 22), VCC to 
 Once the device is running on your network, you can flash new firmware directly from the browser — no cables needed.
 
 1. Build the new firmware: `idf.py build`
-2. Open `http://<device-ip>/ota` in a browser
+2. Open `http://<device-ip>/ota` in a browser and log in (see [Web interface](#web-interface))
 3. Select `build/elering_relay.bin` and click **Upload & Flash**
 4. The page shows an upload progress bar, then reboots automatically
+
+Or from the command line:
+
+```bash
+curl -u admin:<password> -H "Content-Type: application/octet-stream" \
+  --data-binary @build/elering_relay.bin http://<device-ip>/ota
+```
 
 The device uses a dual OTA partition scheme (`ota_0` / `ota_1`). Each update alternates between slots, so the previous firmware remains on flash until the next update overwrites it.
 
@@ -104,8 +112,8 @@ After the first flash, use the `/ota` web page for all future updates.
 
 ## First-time setup
 
-1. Power on the board — it starts as a WiFi access point **EleRelay-Setup** (open, no password).
-2. Connect to that network and open `http://192.168.4.1/wifi`.
+1. Power on the board — it starts as a WiFi access point **EleRelay-Setup**. The access point is WPA2-protected; its password is shown on the LCD.
+2. Connect to that network using the password from the LCD and open `http://192.168.4.1/wifi`.
 3. Enter your WiFi SSID and password and click **Save & Restart**. By default the board uses DHCP; select **Static IP** to set a fixed address, subnet mask, gateway, and DNS.
 4. The board connects to your network, syncs time via NTP, fetches prices, and starts the relay logic.
 
@@ -113,13 +121,22 @@ The IP address is shown on the display. Open `http://<ip>/` in a browser to see 
 
 ## Web interface
 
+The price table (`/`) is public. All other pages require HTTP Basic login:
+
+- **User:** `admin`
+- **Password:** the device password. A random 10-character password is generated on first boot. It is shown on the LCD info page (tap the screen, go to page 4/4) and on the main screen while the device is in setup-AP mode.
+
+Change the password on `/settings` (8–32 printable ASCII characters). The same password is the WPA2 key of the **EleRelay-Setup** access point. In setup-AP mode the web pages don't ask for a login, because joining the access point already required the password.
+
+POST requests whose `Origin`/`Referer` header doesn't match the device are rejected with 403, so other websites can't change settings through your browser. Basic auth over plain HTTP is not encrypted — it protects against casual access on a trusted LAN, not against someone sniffing the network.
+
 | URL | Description |
 |-----|-------------|
 | `/` | Live price table with relay state |
 | `/relay` | Relay schedule &amp; price limit settings |
 | `/settings` | Time, diagnostics, and language settings |
 | `/mqtt` | MQTT broker settings |
-| `/wifi` | Network settings: WiFi credentials, DHCP or static IP (address, mask, gateway, DNS) |
+| `/wifi` | Network settings: WiFi credentials, DHCP or static IP (address, mask, gateway, DNS). Leave the password blank to keep the stored one for the same SSID. |
 | `/ota` | OTA firmware update (upload `.bin` from browser) |
 
 ## Settings
@@ -132,7 +149,7 @@ All settings take effect immediately without a reboot.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Hours window | 12 h | Look-ahead window for cheap/expensive selection |
+| Hours window | 12 h | Look-ahead window for cheap/expensive selection. A shorter final window (before next-day prices are published) gets a proportional share of cheap hours. |
 | Cheap hours | 6 h | How many of the cheapest hours to turn the relay ON |
 | Min. consecutive run | 0 (off) | Once ON, keep relay ON for at least this many minutes — useful for appliances that need a full run cycle (e.g. washing machine). 0 = disabled. |
 | Inverted | off | When on, relay is ON during *expensive* hours instead |
@@ -245,7 +262,7 @@ Tap anywhere on the display to open the on-screen settings (4 pages). Navigate w
 | Row | Control | Notes |
 |-----|---------|-------|
 | Always ON below | toggle button | Green = enabled |
-| Always ON — price | − / + buttons, 0.1 c/kWh step | Force relay ON when price ≤ this value |
+| Always ON — price | − / + buttons, 0.1 c/kWh step | Force relay ON when price ≤ this value (−100 … 1000 c/kWh, negative allowed) |
 | Always OFF above | toggle button | Red = enabled |
 | Always OFF — price | − / + buttons, 0.1 c/kWh step | Force relay OFF when price ≥ this value (highest priority) |
 
@@ -257,7 +274,7 @@ Tap anywhere on the display to open the on-screen settings (4 pages). Navigate w
 
 **Page 4/4 — Info**
 
-Read-only page showing app name, version, build timestamp, WiFi SSID, IP address, and MAC address.
+Read-only page showing app name, version, build timestamp, WiFi SSID, IP address, MAC address, and the web login (user `admin` + device password).
 
 Tap **SAVE** on pages 1–3 to persist all values to NVS.
 
