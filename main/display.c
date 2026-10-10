@@ -202,49 +202,6 @@ static const uint8_t font8x8[95][8] = {
     {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00}, /* 126 '~' */
 };
 
-/* ── 16×16 font: Scale2x upscale of font8x8, built at init ──────────────── */
-/* 16 rows × 2 bytes per row; bit 15 of uint16 = leftmost pixel */
-static uint8_t font16x16[95][32];
-
-static void build_font16x16(void)
-{
-    for (int g = 0; g < 95; g++) {
-        const uint8_t *src = font8x8[g];
-        uint8_t *dst = font16x16[g];
-        memset(dst, 0, 32);
-        for (int row = 0; row < 8; row++) {
-            for (int col = 0; col < 8; col++) {
-                int E = (src[row]              >> col)       & 1;
-                int B = (row > 0) ? (src[row-1] >> col)       & 1 : 0;
-                int H = (row < 7) ? (src[row+1] >> col)       & 1 : 0;
-                int D = (col > 0) ? (src[row]   >> (col - 1)) & 1 : 0;
-                int F = (col < 7) ? (src[row]   >> (col + 1)) & 1 : 0;
-
-                int tl, tr, bl, br;
-                if (B != H && D != F) {
-                    tl = (D == B) ? B : E;
-                    tr = (B == F) ? F : E;
-                    bl = (D == H) ? D : E;
-                    br = (H == F) ? H : E;
-                } else {
-                    tl = tr = bl = br = E;
-                }
-
-                int out[2][2] = {{tl, tr}, {bl, br}};
-                for (int dr = 0; dr < 2; dr++) {
-                    for (int dc = 0; dc < 2; dc++) {
-                        if (out[dr][dc]) {
-                            int drow = row * 2 + dr;
-                            int dcol = col * 2 + dc;
-                            dst[drow * 2 + dcol / 8] |= (uint8_t)(1 << (7 - dcol % 8));
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /* ── Globals ────────────────────────────────────────────────────────────── */
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static int s_disp_lang = LANG_EN;
@@ -418,38 +375,6 @@ static void draw_str(int x, int y, const char *s, uint16_t fg, uint16_t bg, int 
     }
 }
 
-static void draw_char_16(int x, int y, char ch, uint16_t fg, uint16_t bg, int scale)
-{
-    if (ch < 32 || ch > 126) ch = '?';
-    const uint8_t *glyph = font16x16[ch - 32];
-    uint16_t sfg = swap16(fg), sbg = swap16(bg);
-    for (int row = 0; row < 16; row++) {
-        uint16_t bits = ((uint16_t)glyph[row * 2] << 8) | glyph[row * 2 + 1];
-        for (int col = 0; col < 16; col++) {
-            uint16_t c = (bits & (0x8000u >> col)) ? sfg : sbg;
-            for (int sy = 0; sy < scale; sy++) {
-                int py = y + row * scale + sy;
-                int srow = py - s_sy0;
-                if (srow < 0 || srow >= STRIPE_H) continue;
-                for (int sx = 0; sx < scale; sx++) {
-                    int px = x + col * scale + sx;
-                    if (px >= 0 && px < LCD_W)
-                        s_fb[srow * LCD_W + px] = c;
-                }
-            }
-        }
-    }
-}
-
-static void draw_str_16(int x, int y, const char *s, uint16_t fg, uint16_t bg, int scale)
-{
-    while (*s) {
-        draw_char_16(x, y, *s++, fg, bg, scale);
-        x += 16 * scale;
-        if (x + 16 * scale > LCD_W) break;
-    }
-}
-
 /* ── Flush current stripe (s_sy0 .. s_sy0+rows-1) to display ───────────── */
 static void flush_stripe(int rows)
 {
@@ -506,6 +431,7 @@ void display_blink_offline(bool visible)
     xSemaphoreGive(s_lcd_mutex);
 }
 
+#ifndef CONFIG_LCD_ST7789
 /* ── ILI9341 initialisation sequence ───────────────────────────────────── */
 static void ili9341_init(void)
 {
@@ -557,6 +483,9 @@ static void ili9341_init(void)
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
+#endif /* !CONFIG_LCD_ST7789 */
+
+#ifdef CONFIG_LCD_ST7789
 /* ── ST7789 initialisation sequence ────────────────────────────────────── */
 static void st7789_init(void)
 {
@@ -580,6 +509,8 @@ static void st7789_init(void)
     ili_cmd(ILI_DISPON, NULL, 0);
     vTaskDelay(pdMS_TO_TICKS(100));
 }
+
+#endif /* CONFIG_LCD_ST7789 */
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
@@ -643,8 +574,6 @@ void display_init(void)
 #else
     ili9341_init();
 #endif
-
-    build_font16x16();
 
     /* Clear to black, stripe by stripe */
     memset(s_fb, 0, sizeof(s_fb));

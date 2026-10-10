@@ -292,6 +292,30 @@ Tap **SAVE** on pages 1–3 to persist all values to NVS.
 
 These are only used on first boot if no NVS credentials/settings exist. All can be overridden at runtime via the web UI or the LCD touch settings page.
 
+## Project structure
+
+| File | Purpose |
+|------|---------|
+| `main/main.c` | Shared state, relay output, controller task (1 s tick), network task, `app_main` |
+| `main/scheduler.c` | Pure price/relay logic: cheap-slot selection and the single relay decision function used by the relay, the web table and the LCD forecast |
+| `main/prices.c` | Elering API fetch and internet connectivity check |
+| `main/settings.c` | Settings struct and NVS load/save, WiFi credentials, device password |
+| `main/wifi.c` | WiFi station / setup AP, NTP, reconnect watchdogs |
+| `main/mqtt_pub.c` | MQTT publishing |
+| `main/web.c` | Web pages, login and cross-site request protection |
+| `main/ui.c` | LCD main screen, touch config screen, offline blink |
+| `main/display.c` | ILI9341/ST7789 driver, fonts, drawing |
+
+Slow HTTPS requests (price fetch, internet check) run in their own network task, so the clock, the relay logic and the web server never wait for them. **Update prices now** returns immediately; the price table shows "Updating prices…" and reloads until the fetch is done.
+
+### Host tests
+
+`scheduler.c` has no ESP-IDF dependencies and is unit-tested on a PC:
+
+```bash
+make -C test/host
+```
+
 ## License
 
 MIT

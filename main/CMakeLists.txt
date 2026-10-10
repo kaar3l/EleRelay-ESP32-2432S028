@@ -1,5 +1,14 @@
 idf_component_register(
-    SRCS "main.c" "display.c"
+    SRCS
+        "main.c"
+        "scheduler.c"
+        "settings.c"
+        "prices.c"
+        "wifi.c"
+        "mqtt_pub.c"
+        "web.c"
+        "ui.c"
+        "display.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
@@ -16,4 +25,5 @@ idf_component_register(
         mqtt
         app_update
         bootloader_support
+        esp_timer
 )

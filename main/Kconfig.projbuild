@@ -16,7 +16,7 @@ menu "EleRelay"
         int "Relay GPIO pin number"
         default 22
         help
-            GPIO pin connected to the relay IN pin (default: GPIO10 on ESP32-C3).
+            GPIO pin connected to the relay IN pin (default: GPIO22).
 
     config RELAY_ACTIVE_LOW
         bool "Relay activates on LOW (most relay modules)"
